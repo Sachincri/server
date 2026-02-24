@@ -468,7 +468,7 @@ export const getCartSummary = asyncHandler(async (req: AuthRequest, res: Respons
   // Ensure total doesn't go negative
   finalTotalAmount = Math.max(0, finalTotalAmount - couponDiscountAmount - coinsDiscountAmount);
 
-  console.log(`[getCartSummary] 📊 Calculated Summary: itemsPrice=₹${totalAmount}, finalTotalAmount=₹${finalTotalAmount}, couponDiscount=₹${couponDiscountAmount}, coinsDiscount=₹${coinsDiscountAmount}`);
+
 
   return res.status(200).json(ApiResponse.success({
     products: cart.items,

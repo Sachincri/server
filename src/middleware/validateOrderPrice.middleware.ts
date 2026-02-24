@@ -32,7 +32,7 @@ export const validateOrderPrice = asyncHandler(
             itemsPrice += item.sellingPrice * item.quantity;
         });
 
-        console.log(`[validateOrderPrice] 🛒 Base total amount of items (itemsPrice): ₹${itemsPrice}`);
+
 
         let { shippingCharges, totalAmount } = calculateOrderTotals(itemsPrice);
 
@@ -46,7 +46,7 @@ export const validateOrderPrice = asyncHandler(
             totalAmount = itemsPrice + shippingCharges;
         }
 
-        console.log(`[validateOrderPrice] 🚚 After applying Shipping (Charges: ₹${shippingCharges}): Subtotal = ₹${totalAmount}`);
+
 
         let finalAmount = totalAmount;
         let couponDiscount = 0;
@@ -90,7 +90,7 @@ export const validateOrderPrice = asyncHandler(
                     }
 
                     finalAmount -= couponDiscount;
-                    console.log(`[validateOrderPrice] 🏷️ Applied Coupon "${code}": Discount ₹${couponDiscount}. Final Amount is now ₹${finalAmount}`);
+
                 }
             }
         }
@@ -115,10 +115,10 @@ export const validateOrderPrice = asyncHandler(
             coinsToRedeem = Math.min(coinsToRedeem, finalAmount);
             finalAmount -= coinsToRedeem;
 
-            console.log(`[validateOrderPrice] 🪙 Applied Coins (Redeemed: ${eligibleCoins}, Value: ₹${coinsToRedeem}). Final Amount is now ₹${finalAmount}`);
+
         }
 
-        console.log(`[validateOrderPrice] 🎯 FINAL SUMMARY: itemsPrice=₹${itemsPrice}, finalAmount=₹${finalAmount}, couponCode=${foundCoupon?.code || 'None'}`);
+
 
 
         // Attach results to Request object

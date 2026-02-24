@@ -737,11 +737,11 @@ export const getUserReviews = asyncHandler(
     }
 
     // Find all products that have reviews by this user
-    console.log("[DEBUG] Fetching reviews for user:", userId);
+
     const products = await Product.find({
       "reviews.user": userId,
     }).select("name images reviews");
-    console.log("[DEBUG] Found products with user review:", products.length);
+
 
     const userReviews: any[] = [];
 
