@@ -9,7 +9,7 @@ import User from "../models/User.model";
  * GET /api/notifications
  */
 export const getMyNotifications = asyncHandler(
-    async (req: any, res: Response, next: NextFunction) => {
+    async (req: any, res: Response, _next: NextFunction) => {
         const notifications = await Notification.find({ recipient: req.user._id })
             .sort("-createdAt")
             .limit(50);
@@ -34,7 +34,7 @@ export const getMyNotifications = asyncHandler(
  * PATCH /api/notifications/:id/read
  */
 export const markAsRead = asyncHandler(
-    async (req: any, res: Response, next: NextFunction) => {
+    async (req: any, res: Response, _next: NextFunction) => {
         const notification = await Notification.findOne({
             _id: req.params.id,
             recipient: req.user._id,
@@ -59,7 +59,7 @@ export const markAsRead = asyncHandler(
  * PATCH /api/notifications/read-all
  */
 export const markAllAsRead = asyncHandler(
-    async (req: any, res: Response, next: NextFunction) => {
+    async (req: any, res: Response, _next: NextFunction) => {
         await Notification.updateMany(
             { recipient: req.user._id, read: false },
             { read: true }

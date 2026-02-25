@@ -6,7 +6,7 @@ import asyncHandler from "../middleware/asyncHandler";
 import ApiResponse from "../utils/response";
 import { AuthRequest } from "../types";
 
-export const getRealtimeTraffic = asyncHandler(async (req: AuthRequest, res: Response) => {
+export const getRealtimeTraffic = asyncHandler(async (_req: AuthRequest, res: Response) => {
     // 0. Check if GA is enabled in settings
     const settings = await Settings.findOne().sort({ createdAt: -1 });
     if (!settings || !settings.googleAnalyticsEnabled) {

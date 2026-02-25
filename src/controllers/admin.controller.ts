@@ -23,7 +23,7 @@ type TopProductDoc = {
 
 
 export const getAdminDashboard = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
+  async (_req: AuthRequest, res: Response) => {
 
     const now = new Date();
     const today = startOfDay(now);
@@ -638,7 +638,7 @@ export const getAdminDashboard = asyncHandler(
 
 // ---- Bonus: Get detailed product analytics ----
 export const getProductAnalytics = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
+  async (_req: AuthRequest, res: Response) => {
 
     const [totalProducts, outOfStock, lowStock, activeProducts, categoryBreakdown] = await Promise.all([
       Product.countDocuments(),
@@ -736,7 +736,7 @@ export const getProductAnalytics = asyncHandler(
 
 // ---- Bonus: Get customer analytics ----
 export const getCustomerAnalytics = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
+  async (_req: AuthRequest, res: Response) => {
 
     const topCustomers = await Order.aggregate([
       { $match: { orderStatus: { $nin: ["Cancelled", "Returned", "Refunded", "refunded"] } } },
@@ -776,7 +776,7 @@ export const getCustomerAnalytics = asyncHandler(
 );
 
 // ---- Admin User Management ----
-export const getAllUsers = asyncHandler(async (req: AuthRequest, res: Response) => {
+export const getAllUsers = asyncHandler(async (_req: AuthRequest, res: Response) => {
   const users = await User.aggregate([
     { $sort: { createdAt: -1 } },
     {

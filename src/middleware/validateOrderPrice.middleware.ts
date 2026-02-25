@@ -13,7 +13,7 @@ import { calculateOrderTotals } from "../utils/order.utils";
  * Middleware to validate order pricing including coupons and coins
  */
 export const validateOrderPrice = asyncHandler(
-    async (req: Request, res: Response, next: NextFunction) => {
+    async (req: Request, _res: Response, next: NextFunction) => {
         // 1. Fetch Cart (Source of Truth)
         // Assuming authenticated user - req.user._id exists (handled by protect middleware)
         const userId = (req as any).user?._id;

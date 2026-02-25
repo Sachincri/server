@@ -258,7 +258,7 @@ export const paymentVerification = asyncError(
  * Retrieves the Razorpay public key for the frontend.
  */
 export const getRazorpayKey = asyncError(
-  async (req: Request, res: Response) => {
+  async (_req: Request, res: Response) => {
     if (!process.env.RAZORPAY_KEY_ID) {
       throw ApiError.internal("Razorpay configuration missing.");
     }

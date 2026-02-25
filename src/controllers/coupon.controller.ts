@@ -31,7 +31,7 @@ export const createCoupon = asyncHandler(async (req: Request, res: Response, nex
 // @route   GET /api/v1/coupons
 // @access  Admin
 // @access  Admin
-export const getAllCoupons = asyncHandler(async (req: Request, res: Response) => {
+export const getAllCoupons = asyncHandler(async (_req: Request, res: Response) => {
     const coupons = await Coupon.find().sort({ createdAt: -1 });
     res.status(200).json(ApiResponse.success(coupons, 'Coupons fetched successfully'));
 });

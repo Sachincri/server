@@ -3,12 +3,12 @@ import ApiError from '../utils/apiError';
 
 const createRateLimiter = (windowMs: number, max: number, message: string) => {
   if (process.env.NODE_ENV === 'test') {
-    return (req: any, res: any, next: any) => next();
+    return (_req: any, _res: any, next: any) => next();
   }
   return rateLimit({
     windowMs,
     max,
-    handler: (req, res) => {
+    handler: (_req, _res) => {
       throw ApiError.tooManyRequests(message);
     },
     standardHeaders: true,

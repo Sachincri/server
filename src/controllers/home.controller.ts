@@ -373,7 +373,7 @@ export const updateHomePage = asyncHandler(
  * @access Public
  */
 export const getActiveHomePage = asyncHandler(
-    async (req: Request, res: Response) => {
+    async (_req: Request, res: Response) => {
         const homePage = await HomePageCMS.findOne({ isActive: true }).lean();
 
         if (!homePage) throw ApiError.notFound("No active home page found");

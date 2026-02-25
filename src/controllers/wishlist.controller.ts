@@ -11,7 +11,7 @@ import { AuthRequest } from "../types/index";
  * GET /api/wishlist
  */
 export const getWishlist = asyncHandler(
-    async (req: AuthRequest, res: Response, next: NextFunction) => {
+    async (req: AuthRequest, res: Response, _next: NextFunction) => {
         const userId = req.user?._id;
 
         let wishlist = await Wishlist.findOne({ user: userId }).populate(
@@ -32,7 +32,7 @@ export const getWishlist = asyncHandler(
  * POST /api/wishlist
  */
 export const addToWishlist = asyncHandler(
-    async (req: AuthRequest, res: Response, next: NextFunction) => {
+    async (req: AuthRequest, res: Response, _next: NextFunction) => {
         const userId = req.user?._id;
         const { productId } = req.body;
 
@@ -67,7 +67,7 @@ export const addToWishlist = asyncHandler(
  * DELETE /api/wishlist/:productId
  */
 export const removeFromWishlist = asyncHandler(
-    async (req: AuthRequest, res: Response, next: NextFunction) => {
+    async (req: AuthRequest, res: Response, _next: NextFunction) => {
         const userId = req.user?._id;
         const { productId } = req.params;
 

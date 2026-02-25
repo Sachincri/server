@@ -9,7 +9,7 @@ import ApiError from "../utils/apiError";
 const verifyToken = promisify<string, string, TokenPayload>(jwt.verify as any);
 
 export const protect = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, _res: Response, next: NextFunction) => {
     let token: string | undefined;
 
     if (req.headers.authorization?.startsWith("Bearer")) {
@@ -45,7 +45,7 @@ export const protect = asyncHandler(
 );
 
 export const optionalProtect = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, _res: Response, next: NextFunction) => {
     let token: string | undefined;
 
     if (req.headers.authorization?.startsWith("Bearer")) {
@@ -74,7 +74,7 @@ export const optionalProtect = asyncHandler(
 );
 
 export const restrictTo = (...roles: string[]) => {
-  return (req: AuthRequest, res: Response, next: NextFunction): void => {
+  return (req: AuthRequest, _res: Response, next: NextFunction): void => {
     if (!req.user || !roles.includes(req.user.role)) {
       throw ApiError.forbidden(
         "You do not have permission to perform this action"

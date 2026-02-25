@@ -123,8 +123,10 @@ const createDashboardIndexes = async () => {
   }
 };
 
-// Run the script
-createDashboardIndexes();
+// Run the script ONLY if executed directly
+if (require.main === module) {
+  createDashboardIndexes();
+}
 
 // ============================================
 // MONGOOSE MODEL SCHEMA INDEXES
@@ -157,7 +159,7 @@ export const analyzeQueryPerformance = async () => {
   const mongoose = require("mongoose");
 
   // Enable query profiling
-  mongoose.set("debug", (collectionName: string, method: string, query: any, doc: any) => {
+  mongoose.set("debug", (collectionName: string, method: string, query: any, _doc: any) => {
     console.log(`${collectionName}.${method}`, JSON.stringify(query));
   });
 

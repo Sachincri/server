@@ -6,7 +6,7 @@ import ApiError from '../utils/apiError';
 // @desc    Submit a new support request
 // @route   POST /api/v1/support/request
 // @access  Private
-export const submitRequest = asyncHandler(async (req: any, res: Response, next: NextFunction) => {
+export const submitRequest = asyncHandler(async (req: any, res: Response, _next: NextFunction) => {
     const { subject, category, description, priority } = req.body;
 
     const request = await SupportRequest.create({
@@ -29,7 +29,7 @@ export const submitRequest = asyncHandler(async (req: any, res: Response, next: 
 // @desc    Get all support requests (User's own requests)
 // @route   GET /api/v1/support/my-requests
 // @access  Private
-export const getMyRequests = asyncHandler(async (req: any, res: Response, next: NextFunction) => {
+export const getMyRequests = asyncHandler(async (req: any, res: Response, _next: NextFunction) => {
     const requests = await SupportRequest.find({ user: req.user._id }).sort('-createdAt');
 
     res.status(200).json({
@@ -44,7 +44,7 @@ export const getMyRequests = asyncHandler(async (req: any, res: Response, next: 
 // @desc    Get all support requests (Admin only)
 // @route   GET /api/v1/support/all-requests
 // @access  Private/Admin
-export const getAllRequests = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
+export const getAllRequests = asyncHandler(async (_req: Request, res: Response, _next: NextFunction) => {
     const requests = await SupportRequest.find().populate('user', 'name email').sort('-createdAt');
 
     res.status(200).json({

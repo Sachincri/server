@@ -329,7 +329,7 @@ export const getAllProducts = asyncHandler(
 );
 
 export const getAdminProducts = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (_req: AuthRequest, res: Response, _next: NextFunction) => {
     // 1. Fetch products with limited fields to improve performance
     const products = await Product.find({})
       .select("-reviews")
@@ -385,7 +385,7 @@ export const getAdminProducts = asyncHandler(
 );
 
 export const getProductDetails = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const { id } = req.params;
 
     if (!id) {
@@ -619,7 +619,7 @@ export const updateProduct = asyncHandler(
 );
 
 export const deleteProduct = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const { id } = req.params;
 
     if (!id || !isValidObjectId(id)) {
@@ -647,7 +647,7 @@ export const deleteProduct = asyncHandler(
 
 
 export const createProductReview = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, _next: NextFunction) => {
     const { rating, comment, productId } = req.body;
 
     if (!productId || !rating) {
@@ -729,7 +729,7 @@ export const createProductReview = asyncHandler(
 );
 
 export const getUserReviews = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, _next: NextFunction) => {
     const userId = req.user?._id;
 
     if (!userId) {
@@ -773,7 +773,7 @@ export const getUserReviews = asyncHandler(
 );
 
 export const getProductReviews = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const { id, rating } = req.query;
 
     if (!id || typeof id !== "string" || !isValidObjectId(id)) {
@@ -806,7 +806,7 @@ export const getProductReviews = asyncHandler(
 );
 
 export const deleteReview = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const { productId, id } = req.query;
 
     if (
@@ -864,7 +864,7 @@ export const deleteReview = asyncHandler(
 );
 
 export const addToRecentlyViewed = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, _next: NextFunction) => {
     const { productId } = req.body;
 
     if (!productId) {
@@ -894,7 +894,7 @@ export const addToRecentlyViewed = asyncHandler(
 );
 
 export const getRecentlyViewedProducts = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, _next: NextFunction) => {
     const user = await User.findById(req.user!._id).populate("recentlyViewed");
 
     if (!user) {

@@ -63,7 +63,7 @@ const sendErrorProd = (err: ApiError, res: Response): void => {
   }
 };
 
-const errorHandler = (err: any, req: Request, res: Response, next: NextFunction): void => {
+const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction): void => {
   err.statusCode = err.statusCode || 500;
   err.success = false;
 
@@ -79,6 +79,9 @@ const errorHandler = (err: any, req: Request, res: Response, next: NextFunction)
     if (err.name === 'TokenExpiredError') error = handleJWTExpiredError();
 
     sendErrorProd(error, res);
+  } else {
+    // Fallback for any other environment
+    sendErrorProd(err, res);
   }
 };
 

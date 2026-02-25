@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoSanitize from 'express-mongo-sanitize';
 
-export const sanitizeRequest = (req: Request, res: Response, next: NextFunction) => {
+export const sanitizeRequest = (req: Request, _res: Response, next: NextFunction) => {
   // Sanitize body
   if (req.body) {
     req.body = mongoSanitize.sanitize(req.body);

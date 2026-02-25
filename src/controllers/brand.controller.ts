@@ -7,7 +7,7 @@ import { toSlug } from "../utils/helper";
 import { uploadOnCloudinary } from "../utils/uploadOnCloudinary";
 
 export const getAllBrands = asyncHandler(
-  async (req: Request, res: Response) => {
+  async (_req: Request, res: Response) => {
     const brands = await Brand.find().lean();
     return res.status(200).json(ApiResponse.success(brands));
   }

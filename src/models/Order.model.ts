@@ -117,32 +117,27 @@ const orderSchema = new Schema<IOrder>(
             type: String,
             required: true,
             default: "Processing",
+            enum: ["Processing", "Shipped", "Delivered", "Cancelled", "Returned"],
         },
         deliveredAt: Date,
-        createdAt: {
-            type: Date,
-            default: Date.now,
-        },
+        shippedAt: Date,
+        processingAt: Date,
+        cancelledAt: Date,
+        cancellationReason: String,
+        coinsEarned: {
+            type: Number,
+            default: 0
+        }
     },
     { timestamps: true }
 );
 
-orderSchema.add({
-    shippedAt: Date,
-    processingAt: Date,
-    cancelledAt: Date,
-    cancellationReason: String,
-    coinsEarned: {
-        type: Number,
-        default: 0
-    }
-});
-
-
-orderSchema.index({ user: 1 });
-orderSchema.index({ orderStatus: 1 });
-orderSchema.index({ "paymentInfo.id": 1 });
-orderSchema.index({ createdAt: -1 });
+// High-Performance Dashboard Indexes
+orderSchema.index({ createdAt: -1, orderStatus: 1 }); // For time-series status filtering
+orderSchema.index({ user: 1, createdAt: -1 }); // For user purchase history
+orderSchema.index({ "orderItems.product": 1, createdAt: -1 }); // For product sales analysis
+orderSchema.index({ orderStatus: 1, totalPrice: -1 }); // For revenue analysis
+orderSchema.index({ "paymentInfo.id": 1 }); // For payment lookup
 
 export default mongoose.model<IOrder>("Order", orderSchema);
 

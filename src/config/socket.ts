@@ -27,10 +27,16 @@ export const initializeSocket = (httpServer: HTTPServer): SocketIOServer => {
             logger.error(`Socket error: ${socket.id} `, error);
         });
 
-        // Admin room for dashboard updates
-        socket.on('join:admin', () => {
-            socket.join('admin');
-            logger.info(`Socket ${socket.id} joined admin room`);
+        // Admin room for dashboard updates - SECURED
+        socket.on('join:admin', (token: string) => {
+            const adminSecret = process.env.ADMIN_SOCKET_SECRET || 'fallback_secret_change_me';
+            if (token === adminSecret) {
+                socket.join('admin');
+                logger.info(`Socket ${socket.id} authorized and joined admin room`);
+            } else {
+                logger.warn(`Unauthorized attempt to join admin room from socket ${socket.id}`);
+                socket.emit('error', 'Unauthorized: Invalid admin secret');
+            }
         });
 
         socket.on('leave:admin', () => {

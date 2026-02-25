@@ -223,7 +223,7 @@ const restoreProductStock = async (orderItems: OrderItem[], session?: ClientSess
 // ... 
 
 export const createOrder = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, _next: NextFunction) => {
     const orderData = req.body as OrderData;
     const userId = req.user?._id;
 
@@ -434,7 +434,7 @@ export const createOrder = asyncHandler(
  * GET /api/orders/:id
  */
 export const getSingleOrder = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, _next: NextFunction) => {
     const { id } = req.params;
 
     if (!id || !isValidObjectId(id)) {
@@ -465,7 +465,7 @@ export const getSingleOrder = asyncHandler(
  * GET /api/orders/me
  */
 export const myOrders = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, _next: NextFunction) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
     const skip = (page - 1) * limit;
@@ -494,7 +494,7 @@ export const myOrders = asyncHandler(
  * GET /api/admin/orders
  */
 export const getAllOrders = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
     const skip = (page - 1) * limit;
@@ -615,7 +615,7 @@ export const getAllOrders = asyncHandler(
  * PUT /api/admin/orders/:id
  */
 export const updateOrderStatus = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const { id } = req.params;
     const { status } = req.body;
 
@@ -736,7 +736,7 @@ export const updateOrderStatus = asyncHandler(
  * PUT /api/orders/:id/cancel
  */
 export const cancelOrder = asyncHandler(
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, _next: NextFunction) => {
     const { id } = req.params;
     const { reason } = req.body;
 
@@ -821,7 +821,7 @@ export const cancelOrder = asyncHandler(
  * DELETE /api/admin/orders/:id
  */
 export const deleteOrder = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const { id } = req.params;
 
     if (!id || !isValidObjectId(id)) {
@@ -854,7 +854,7 @@ export const deleteOrder = asyncHandler(
  * GET /api/admin/orders/stats
  */
 export const getOrderStats = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (_req: Request, res: Response, _next: NextFunction) => {
     const totalOrders = await Order.countDocuments();
 
     const statusCounts = await Order.aggregate([
@@ -908,7 +908,7 @@ export const getOrderStats = asyncHandler(
  * POST /api/admin/orders/:id/email
  */
 export const sendOrderEmail = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const { id } = req.params;
 
     if (!id || !isValidObjectId(id)) {

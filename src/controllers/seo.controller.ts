@@ -8,7 +8,7 @@ import ApiResponse from "../utils/response";
  * Controller to provide data for dynamic sitemap generation.
  * This can be consumed by the frontend to build a sitemap.xml
  */
-export const getSitemapData = asyncHandler(async (req: Request, res: Response) => {
+export const getSitemapData = asyncHandler(async (_req: Request, res: Response) => {
     const [products, categories] = await Promise.all([
         Product.find({ isActive: true }).select("slug updatedAt images"),
         Category.find().select("name"),

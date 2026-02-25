@@ -48,7 +48,7 @@ app.use(cors(corsOptions));
 // Body parser
 app.use(express.json({
   limit: "10kb",
-  verify: (req: any, res, buf) => {
+  verify: (req: any, _res, buf) => {
     req.rawBody = buf.toString();
   }
 }));
@@ -69,13 +69,10 @@ app.use(hpp());
 
 
 // Health check
-app.get("/", (req: Request, res: Response) => {
+app.get("/favicon.ico", (_req: Request, _res: Response) => _res.status(204).end());
+app.get("/", (_req: Request, res: Response) => {
   res.status(200).json({ status: "success", message: "Server is healthy" });
 });
-
-// API routes
-
-// ... previous imports ... 
 
 // API routes
 app.use("/api/v1/home", homeRoutes)
@@ -99,7 +96,7 @@ app.use("/api/v1/analytics", analyticsRoutes);
 
 
 // 404 handler
-app.use((req: Request, res: Response, next: NextFunction) => {
+app.use((req: Request, _res: Response, next: NextFunction) => {
   const err: any = new Error(`Can't find ${req.originalUrl} on this server!`);
   err.statusCode = 404;
   err.status = "fail";

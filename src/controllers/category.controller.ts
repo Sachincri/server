@@ -7,7 +7,7 @@ import { toSlug } from "../utils/helper";
 import { uploadOnCloudinary } from "../utils/uploadOnCloudinary";
 
 export const getAllCategories = asyncHandler(
-  async (req: Request, res: Response) => {
+  async (_req: Request, res: Response) => {
     const categories = await Category.find().populate('parent', 'name slug').lean();
     return res.status(200).json(ApiResponse.success(categories));
   }

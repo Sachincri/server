@@ -7,7 +7,7 @@ import ApiResponse from "../utils/response";
  * Get current settings
  * GET /api/v1/admin/settings
  */
-export const getSettings = asyncHandler(async (req: Request, res: Response) => {
+export const getSettings = asyncHandler(async (_req: Request, res: Response) => {
     let settings = await Settings.findOne().sort({ createdAt: -1 });
 
     if (!settings) {
@@ -94,7 +94,7 @@ export const updateSettings = asyncHandler(async (req: Request, res: Response) =
  * Get settings for public (client side)
  * GET /api/v1/home/settings
  */
-export const getPublicSettings = asyncHandler(async (req: Request, res: Response) => {
+export const getPublicSettings = asyncHandler(async (_req: Request, res: Response) => {
     let settings = await Settings.findOne().sort({ createdAt: -1 });
 
     if (!settings) {

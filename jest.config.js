@@ -20,4 +20,20 @@ module.exports = {
     testTimeout: 30000,
     verbose: true,
     forceExit: true,
+    collectCoverage: false, // Enable in CI: jest --coverage
+    coverageDirectory: 'coverage',
+    collectCoverageFrom: [
+        'src/**/*.ts',
+        '!src/**/*.d.ts',
+        '!src/utils/createIndexes.ts',
+        '!src/types/**',
+    ],
+    coverageThresholds: {
+        global: {
+            lines: 60,
+            functions: 60,
+            branches: 40,
+            statements: 60,
+        },
+    },
 };
