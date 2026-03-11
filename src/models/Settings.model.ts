@@ -16,15 +16,11 @@ export interface ISettings extends Document {
     stripeEnabled: boolean;
     aiChatEnabled: boolean;
     aiSuggestionsEnabled: boolean;
-    emailService: "smtp" | "sendgrid";
+    emailService: "brevo";
     siteBackgroundGradient: string;
     emailEnabled: boolean;
     googleAnalyticsEnabled: boolean;
-    smtpHost?: string;
-    smtpPort?: number;
-    smtpUser?: string;
-    smtpPassword?: string;
-    sendgridApiKey?: string;
+    brevoApiKey?: string;
     updatedBy: mongoose.Schema.Types.ObjectId;
 }
 
@@ -92,12 +88,12 @@ const settingsSchema = new Schema<ISettings>(
         },
         emailService: {
             type: String,
-            enum: ["smtp", "sendgrid"],
-            default: "smtp",
+            enum: ["brevo"],
+            default: "brevo",
         },
         emailEnabled: {
             type: Boolean,
-            default: false,
+            default: true,
         },
         siteBackgroundGradient: {
             type: String,
@@ -107,23 +103,7 @@ const settingsSchema = new Schema<ISettings>(
             type: Boolean,
             default: false,
         },
-        smtpHost: {
-            type: String,
-            default: "",
-        },
-        smtpPort: {
-            type: Number,
-            default: 587,
-        },
-        smtpUser: {
-            type: String,
-            default: "",
-        },
-        smtpPassword: {
-            type: String,
-            default: "",
-        },
-        sendgridApiKey: {
+        brevoApiKey: {
             type: String,
             default: "",
         },

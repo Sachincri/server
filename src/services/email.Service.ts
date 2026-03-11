@@ -1,5 +1,6 @@
 import nodemailer, { Transporter } from "nodemailer";
 import sgMail from "@sendgrid/mail";
+import { BrevoClient } from "@getbrevo/brevo";
 import logger from "../utils/logger";
 import Settings from "../models/Settings.model";
 
@@ -11,32 +12,53 @@ interface EmailOptions {
 }
 
 class EmailService {
-  private smtpTransporter: Transporter;
+  private smtpTransporter?: Transporter;
 
   constructor() {
-    this.smtpTransporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT || "587"),
-      secure: parseInt(process.env.SMTP_PORT || "587") === 465,
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-    });
+    if (process.env.SMTP_HOST) {
+      this.smtpTransporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || "587"),
+        secure: parseInt(process.env.SMTP_PORT || "587") === 465,
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      });
+    }
 
     if (process.env.SENDGRID_API_KEY) {
       sgMail.setApiKey(process.env.SENDGRID_API_KEY);
     }
+
   }
 
   async sendEmail(options: EmailOptions): Promise<void> {
     const settings = await Settings.findOne();
-    const service = settings?.emailService || "smtp";
+    const apiKey = settings?.brevoApiKey || process.env.BREVO_API_KEY;
+    const service: string = settings?.emailService || "brevo";
 
-    const from = `${process.env.FROM_NAME} <${process.env.FROM_EMAIL}>`;
+    const fromName = process.env.FROM_NAME || "E-Commerce";
+    const fromEmail = process.env.FROM_EMAIL || "noreply@ecommerce.com";
+    const from = `${fromName} <${fromEmail}>`;
 
     try {
-      if (service === "sendgrid" && process.env.SENDGRID_API_KEY) {
+      if (service === "brevo") {
+        if (!apiKey) {
+          throw new Error("Brevo API key is missing in Settings and .env");
+        }
+        // Initialize local client with dynamic DB key overriding env
+        const dynamicBrevoClient = new BrevoClient({ apiKey });
+
+        await dynamicBrevoClient.transactionalEmails.sendTransacEmail({
+          subject: options.subject,
+          htmlContent: options.html,
+          sender: { name: fromName, email: fromEmail },
+          to: [{ email: options.email }],
+          textContent: options.message
+        });
+        logger.info(`Email sent via Brevo to ${options.email}`);
+      } else if (service === "sendgrid") {
         await sgMail.send({
           to: options.email,
           from: process.env.FROM_EMAIL!, // SendGrid often requires just the email or a verified sender
@@ -46,6 +68,9 @@ class EmailService {
         });
         logger.info(`Email sent via SendGrid to ${options.email}`);
       } else {
+        if (!this.smtpTransporter) {
+          throw new Error("No email service configured. Please provide BREVO_API_KEY, SENDGRID_API_KEY or SMTP_HOST in .env");
+        }
         const mailOptions = {
           from,
           to: options.email,

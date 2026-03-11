@@ -17,6 +17,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@getbrevo/brevo": "^4.0.1",
     "@google-analytics/data": "^5.2.1",
     "@google/generative-ai": "^0.24.1",
     "@huggingface/inference": "^4.13.9",
