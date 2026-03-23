@@ -49,3 +49,19 @@ export interface IUser extends Document {
   createPasswordResetToken(): string;
   recentlyViewed: mongoose.Types.ObjectId[];
 }
+
+export interface IOTP extends Document {
+  email: string;
+  phone?: string;
+  otp: string; // stored as a hash
+  type:
+    | "email_verification"
+    | "phone_verification"
+    | "login"
+    | "password_reset";
+  expiresAt: Date;
+  verified: boolean;
+  attempts: number;
+  registrationData?: any;
+  compareOTP(candidateOTP: string): Promise<boolean>;
+}

@@ -1,20 +1,6 @@
-import mongoose, { Document, Schema } from "mongoose";
+import mongoose, { Schema } from "mongoose";
 import bcrypt from "bcryptjs";
-
-export interface IOTP extends Document {
-  email: string;
-  phone?: string;
-  otp: string; // stored as a hash
-  type:
-    | "email_verification"
-    | "phone_verification"
-    | "login"
-    | "password_reset";
-  expiresAt: Date;
-  verified: boolean;
-  attempts: number;
-  compareOTP(candidateOTP: string): Promise<boolean>;
-}
+import { IOTP } from "../types/authTypes";
 
 const otpSchema = new Schema<IOTP>(
   {
@@ -31,6 +17,7 @@ const otpSchema = new Schema<IOTP>(
     otp: {
       type: String,
       required: true,
+      select: false, // Don't include the hashed OTP in query results by default
     },
     type: {
       type: String,
@@ -55,9 +42,14 @@ const otpSchema = new Schema<IOTP>(
       type: Number,
       default: 0,
     },
+    registrationData: {
+      type: Schema.Types.Mixed,
+    },
   },
   {
     timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
   }
 );
 

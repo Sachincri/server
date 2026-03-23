@@ -54,31 +54,32 @@ class AuthService {
   /* ================================ REGISTER ================================ */
 
   async register(userData: RegisterDTO): Promise<{ message: string }> {
-    const { name, phone, password } = userData;
-    const email = validator.normalizeEmail(userData.email) || userData.email.toLowerCase();
+    const { email: rawEmail, phone } = userData;
+    const email = validator.normalizeEmail(rawEmail) || rawEmail.toLowerCase();
 
+    // Check if user already exists and is verified
     const existingUser = await User.findOne({
       $or: [{ email }, { phone }],
     });
 
     if (existingUser) {
-      if (existingUser.email === email) {
-        throw ApiError.conflict("Email already registered");
+      if (existingUser.isEmailVerified) {
+        if (existingUser.email === email) {
+          throw ApiError.conflict("Email already registered and verified");
+        }
+        throw ApiError.conflict("Phone number already registered and verified");
       }
-      throw ApiError.conflict("Phone number already registered");
+      // If user exists but is not verified (from old flow), we can still proceed
+      // but maybe we should delete or update them? 
+      // For now, let's treat it as a new registration request and we'll handle the collision during actual creation.
     }
 
-    await User.create({
-      name,
-      email,
-      phone,
-      password,
-      isEmailVerified: false,
-    });
-
+    // Instead of creating the user now, we store the data in the OTP document
     const { otp } = await otpService.createOTP(
       email,
-      "email_verification"
+      "email_verification",
+      phone,
+      userData // Store the registration data
     );
 
     await emailService.sendOTP(email, otp);
@@ -89,15 +90,20 @@ class AuthService {
   /* ============================ VERIFY EMAIL OTP ============================ */
 
   async verifyEmail(email: string, otp: string) {
-    await otpService.verifyOTP(email, otp, "email_verification");
+    // verifyOTP now returns the otpDoc containing registrationData
+    const otpDoc = await otpService.verifyOTP(email, otp, "email_verification");
 
-    const user = await User.findOneAndUpdate(
-      { email },
-      { isEmailVerified: true },
-      { new: true }
-    );
+    if (!otpDoc.registrationData) {
+      throw ApiError.badRequest("Registration data not found. Please register again.");
+    }
 
-    if (!user) throw ApiError.notFound("User not found");
+    // Now finally create the user in the database
+    const user = await User.create({
+      ...otpDoc.registrationData,
+      isEmailVerified: true,
+    });
+
+    if (!user) throw ApiError.internal("Failed to create user account");
 
     const tokens = await this.generateTokens(user);
 
