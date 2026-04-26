@@ -15,19 +15,21 @@ import { Cart } from "../models/Cart.model";
 import SettingsModel from "../models/Settings.model";
 import emailService from "../services/email.Service";
 import { createNotification, notifyAdmins } from "./notification.controller";
+import { shippingService } from "../services/shipping.service";
 // import { calculateOrderTotals } from "../utils/order.utils";
 import { AuthRequest } from "../types/index";
 
 // Constants
 const ORDER_STATUS = {
-  PLACED: "placed",
-  NEW: "new",
-  PENDING: "pending",
-  PROCESSING: "processing",
-  SHIPPED: "shipped",
-  DELIVERED: "delivered",
-  CANCELLED: "cancelled",
-  REFUNDED: "refunded",
+  PLACED: "Ordered",
+  NEW: "Ordered",
+  PENDING: "Ordered",
+  ORDERED: "Ordered",
+  PROCESSING: "Processing",
+  SHIPPED: "Shipped",
+  DELIVERED: "Delivered",
+  CANCELLED: "Cancelled",
+  REFUNDED: "Returned",
 } as any;
 
 const PAYMENT_STATUS = {
@@ -181,18 +183,25 @@ const validatePaymentInfo = (paymentInfo: PaymentInfo): string[] => {
 
 const updateProductStock = async (orderItems: OrderItem[], session?: ClientSession): Promise<void> => {
   const stockUpdates = orderItems.map(async (item) => {
-    let query = Product.findById(item.product);
-    if (session) {
-      query = query.session(session);
-    }
-    const product = await query;
+    // Atomic update: only decrement if stock is >= requested quantity
+    const updatedProduct = await Product.findOneAndUpdate(
+      { _id: item.product, stock: { $gte: item.quantity } },
+      { $inc: { stock: -item.quantity } },
+      { new: true, session: session || undefined }
+    );
 
-    if (product) {
-      if (product.stock < item.quantity) {
-        throw ApiError.badRequest(`Insufficient stock for ${product.name}`);
+    if (!updatedProduct) {
+      // If null, it means either product was deleted or stock became insufficient
+      // Let's fetch the product to give a precise error message
+      let query = Product.findById(item.product);
+      if (session) query = query.session(session);
+      const product = await query;
+      
+      if (!product) {
+        throw ApiError.badRequest(`Product not found`);
+      } else {
+        throw ApiError.badRequest(`Sorry, another user just bought the last stock for ${product.name}. Available: ${product.stock}`);
       }
-      product.stock -= item.quantity;
-      await product.save({ validateBeforeSave: false, session: session || undefined });
     }
   });
 
@@ -253,7 +262,7 @@ export const createOrder = asyncHandler(
       // Map Cart Items to Order Items
       // Pre-fetch products to get actualPrice
       const productIds = cart.items.map((item: any) => item.product);
-      const products = await Product.find({ _id: { $in: productIds } }).select("actualPrice").lean();
+      const products = await Product.find({ _id: { $in: productIds } }).select("actualPrice weight").lean();
       const productMap = new Map(products.map((p: any) => [p._id.toString(), p]));
 
       // Map Cart Items to Order Items
@@ -265,6 +274,7 @@ export const createOrder = asyncHandler(
           sellingPrice: item.sellingPrice,
           actualPrice: product?.actualPrice,
           image: item.productImage,
+          weight: product?.weight || 0.5,
           quantity: item.quantity,
           size: item.variant?.size,
           color: item.variant?.color,
@@ -633,31 +643,36 @@ export const updateOrderStatus = asyncHandler(
       throw ApiError.forbidden("Order not found");
     }
 
+    const currentStatus = order.orderStatus;
+
     // Prevent status change if already delivered
-    if (order.orderStatus.toLowerCase() === ORDER_STATUS.DELIVERED) {
+    if (currentStatus === ORDER_STATUS.DELIVERED) {
       throw ApiError.badRequest("Order already delivered");
     }
 
     // Prevent status change if cancelled
-    if (order.orderStatus.toLowerCase() === ORDER_STATUS.CANCELLED) {
+    if (currentStatus === ORDER_STATUS.CANCELLED) {
       throw ApiError.badRequest("Cannot update cancelled order");
+    }
+
+    // Allow idempotency (if status is already the same, just return success)
+    if (currentStatus === status) {
+      res.status(200).json(ApiResponse.success({ order }, `Order status is already ${status}`));
+      return;
     }
 
     // Validate status transition
     const validTransitions: Record<string, string[]> = {
-      [ORDER_STATUS.PLACED]: [ORDER_STATUS.PROCESSING, ORDER_STATUS.CANCELLED],
-      [ORDER_STATUS.NEW]: [ORDER_STATUS.PROCESSING, ORDER_STATUS.CANCELLED],
-      [ORDER_STATUS.PENDING]: [ORDER_STATUS.PROCESSING, ORDER_STATUS.CANCELLED],
+      [ORDER_STATUS.ORDERED]: [ORDER_STATUS.PROCESSING, ORDER_STATUS.CANCELLED],
       [ORDER_STATUS.PROCESSING]: [ORDER_STATUS.SHIPPED, ORDER_STATUS.CANCELLED],
       [ORDER_STATUS.SHIPPED]: [ORDER_STATUS.DELIVERED, ORDER_STATUS.CANCELLED],
     };
 
-    const currentStatus = order.orderStatus.toLowerCase();
     const allowedStatuses = validTransitions[currentStatus] || [];
 
     if (!allowedStatuses.includes(status)) {
       throw ApiError.badRequest(
-        `Cannot change status from ${order.orderStatus} to ${status}`
+        `Cannot change status from ${currentStatus} to ${status}`
       );
     }
 
@@ -665,6 +680,16 @@ export const updateOrderStatus = asyncHandler(
     if (status === ORDER_STATUS.PROCESSING) {
       order.processingAt = new Date();
     } else if (status === ORDER_STATUS.SHIPPED) {
+      // Create shipment with 3rd party API if integration enabled
+      try {
+        const shipmentResult = await shippingService.createShipment(order as any);
+        if (shipmentResult) {
+          order.shipment = shipmentResult;
+        }
+      } catch (err: any) {
+        throw ApiError.internal(`Failed to create shipment: ${err.message}`);
+      }
+      
       order.shippedAt = new Date();
     } else if (status === ORDER_STATUS.DELIVERED) {
       order.deliveredAt = new Date();
@@ -755,16 +780,18 @@ export const cancelOrder = asyncHandler(
       throw ApiError.unauthorized("Not authorized to cancel this order");
     }
 
+    const currentStatus = order.orderStatus;
+
     // Check if order can be cancelled
-    if (order.orderStatus.toLowerCase() === ORDER_STATUS.DELIVERED) {
+    if (currentStatus === ORDER_STATUS.DELIVERED) {
       throw ApiError.badRequest("Cannot cancel delivered order");
     }
 
-    if (order.orderStatus.toLowerCase() === ORDER_STATUS.CANCELLED) {
+    if (currentStatus === ORDER_STATUS.CANCELLED) {
       throw ApiError.badRequest("Order already cancelled");
     }
 
-    if (order.orderStatus.toLowerCase() === ORDER_STATUS.SHIPPED) {
+    if (currentStatus === ORDER_STATUS.SHIPPED) {
       throw ApiError.badRequest(
         "Cannot cancel shipped order. Please contact support"
       );
@@ -772,6 +799,9 @@ export const cancelOrder = asyncHandler(
 
     // Restore product stock
     await restoreProductStock(order.orderItems as any);
+
+    // Cancel shipment if integrated provider was used
+    await shippingService.cancelShipment(order as any);
 
     order.orderStatus = ORDER_STATUS.CANCELLED;
     order.cancelledAt = new Date();
@@ -834,8 +864,10 @@ export const deleteOrder = asyncHandler(
       throw ApiError.notFound("Order not found");
     }
 
+    const currentStatus = order.orderStatus;
+
     // Only allow deletion of cancelled orders
-    if (order.orderStatus.toLowerCase() !== ORDER_STATUS.CANCELLED) {
+    if (currentStatus !== ORDER_STATUS.CANCELLED) {
       throw ApiError.badRequest("Only cancelled orders can be deleted");
     }
 
@@ -926,8 +958,55 @@ export const sendOrderEmail = asyncHandler(
       throw ApiError.badRequest("User email not found");
     }
 
-    await emailService.sendOrderConfirmation(user.email, user.name, String(order._id), order.totalPrice);
+    const { aiService } = await import("../services/ai.service");
+    
+    const aiEmailPayload = await aiService.generateOrderSupportEmail(order, user);
+
+    await emailService.sendEmail({
+      email: user.email,
+      subject: aiEmailPayload.subject,
+      html: aiEmailPayload.html,
+      message: aiEmailPayload.message
+    });
 
     res.status(200).json(ApiResponse.success(null, "Order email sent successfully"));
+  }
+);
+
+/**
+ * Get order live tracking
+ * GET /api/orders/:id/tracking   (or /api/admin/order/:id/tracking)
+ */
+export const getOrderTracking = asyncHandler(
+  async (req: AuthRequest, res: Response, _next: NextFunction) => {
+    const { id } = req.params;
+
+    if (!id || !isValidObjectId(id)) {
+      throw ApiError.badRequest("Invalid order ID");
+    }
+
+    const order = await Order.findById(id);
+    if (!order) {
+      throw ApiError.notFound("Order not found");
+    }
+
+    // Role check (users can only track their own)
+    if (req.user?.role !== "admin" && order.user.toString() !== req.user?._id.toString()) {
+        throw ApiError.forbidden("Not authorized to view tracking for this order");
+    }
+
+    if (!order.shipment || order.shipment.provider === "manual" || !order.shipment.awbNumber) {
+        // Return structured generic response instead of an Error if no real-time tracking
+        res.status(200).json(ApiResponse.success({ tracking: null }, "No automated tracking available for this order"));
+        return;
+    }
+
+    const trackingData = await shippingService.getTracking(order as any);
+    
+    if (!trackingData) {
+        throw ApiError.internal("Could not fetch tracking data from provider");
+    }
+
+    res.status(200).json(ApiResponse.success({ tracking: trackingData }));
   }
 );

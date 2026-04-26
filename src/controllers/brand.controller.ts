@@ -5,10 +5,23 @@ import ApiResponse from "../utils/response";
 import ApiError from "../utils/apiError";
 import { toSlug } from "../utils/helper";
 import { uploadOnCloudinary } from "../utils/uploadOnCloudinary";
+import { cacheGet, cacheSet, cacheDel, CACHE_KEYS, CACHE_TTL } from "../config/redis";
 
 export const getAllBrands = asyncHandler(
   async (_req: Request, res: Response) => {
+    // ── Redis cache check ──
+    const cached = await cacheGet(CACHE_KEYS.BRANDS);
+    if (cached) {
+      res.set("X-Cache", "HIT");
+      return res.status(200).json(ApiResponse.success(cached));
+    }
+
     const brands = await Brand.find().lean();
+
+    // Cache for 1 hour — brands rarely change
+    await cacheSet(CACHE_KEYS.BRANDS, brands, CACHE_TTL.BRANDS);
+
+    res.set("X-Cache", "MISS");
     return res.status(200).json(ApiResponse.success(brands));
   }
 );
@@ -37,6 +50,9 @@ export const createBrand = asyncHandler(
         url: result.secure_url
       }
     });
+
+    // Invalidate brands cache
+    await cacheDel(CACHE_KEYS.BRANDS);
 
     return res.status(201).json(ApiResponse.created(brand, "Brand created successfully"));
   }

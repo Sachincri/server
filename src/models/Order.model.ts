@@ -18,6 +18,7 @@ export interface IOrder extends Document {
         actualPrice?: number;
         quantity: number;
         image: string;
+        weight?: number;
         product: mongoose.Schema.Types.ObjectId;
         size?: string;
         color?: string;
@@ -44,6 +45,16 @@ export interface IOrder extends Document {
     cancelledAt?: Date;
     cancellationReason?: string;
     coinsEarned?: number;
+    shipment?: {
+        provider: "manual" | "shiprocket" | "delhivery";
+        providerOrderId?: string;
+        shipmentId?: string;
+        awbNumber?: string;
+        courierName?: string;
+        trackingUrl?: string;
+        labelUrl?: string;
+        estimatedDelivery?: Date;
+    };
 }
 
 const orderSchema = new Schema<IOrder>(
@@ -66,6 +77,7 @@ const orderSchema = new Schema<IOrder>(
                 actualPrice: { type: Number },
                 quantity: { type: Number, required: true },
                 image: { type: String, required: true },
+                weight: { type: Number, default: 0.5 },
                 product: {
                     type: mongoose.Schema.Types.ObjectId,
                     ref: "Product",
@@ -75,8 +87,8 @@ const orderSchema = new Schema<IOrder>(
                 color: { type: String },
                 status: {
                     type: String,
-                    default: "Processing",
-                    enum: ["Processing", "Shipped", "Delivered", "Cancelled", "Returned"],
+                    default: "Ordered",
+                    enum: ["Ordered", "Processing", "Shipped", "Delivered", "Cancelled", "Returned"],
                 }
             },
         ],
@@ -116,8 +128,8 @@ const orderSchema = new Schema<IOrder>(
         orderStatus: {
             type: String,
             required: true,
-            default: "Processing",
-            enum: ["Processing", "Shipped", "Delivered", "Cancelled", "Returned"],
+            default: "Ordered",
+            enum: ["Ordered", "Processing", "Shipped", "Delivered", "Cancelled", "Returned"],
         },
         deliveredAt: Date,
         shippedAt: Date,
@@ -127,6 +139,19 @@ const orderSchema = new Schema<IOrder>(
         coinsEarned: {
             type: Number,
             default: 0
+        },
+        shipment: {
+            provider: {
+                type: String,
+                enum: ["manual", "shiprocket", "delhivery"],
+            },
+            providerOrderId: String,
+            shipmentId: String,
+            awbNumber: String,
+            courierName: String,
+            trackingUrl: String,
+            labelUrl: String,
+            estimatedDelivery: Date,
         }
     },
     { timestamps: true }

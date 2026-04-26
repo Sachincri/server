@@ -83,3 +83,22 @@ export const restrictTo = (...roles: string[]) => {
     next();
   };
 };
+
+export const verifyBlandWebhook = asyncHandler(
+  async (req: AuthRequest, _res: Response, next: NextFunction) => {
+    const secret = process.env.BLAND_WEBHOOK_SECRET;
+    if (!secret) {
+        if (process.env.NODE_ENV === 'production') {
+            throw ApiError.unauthorized("Webhook secret not configured server-side");
+        }
+        return next();
+    }
+
+    const providedSecret = req.headers["x-bland-secret"];
+    if (providedSecret !== secret) {
+        throw ApiError.unauthorized("Invalid webhook signature from Bland AI");
+    }
+
+    next();
+  }
+);

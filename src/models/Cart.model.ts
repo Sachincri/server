@@ -86,10 +86,6 @@ const CartSchema = new Schema<ICart>({
         required: true
     },
     items: [CartItemSchema],
-    subtotal: {
-        type: Number,
-        default: 0
-    },
     couponCode: {
         type: String,
         default: null
@@ -98,23 +94,33 @@ const CartSchema = new Schema<ICart>({
         type: Boolean,
         default: false
     }
-}, { timestamps: true });
-
-// Virtual subtotal (can replace storing it if preferred, or used for validation)
-CartSchema.virtual('totalItems').get(function () {
-    return this.items.reduce((total, item) => total + item.quantity, 0);
+}, { 
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
 });
 
-// Middleware to calculate subtotal before saving
-CartSchema.pre('save', function (next) {
-    this.subtotal = this.items.reduce((sum, item) => sum + (item.sellingPrice * item.quantity), 0);
-    this.totalDiscount = this.items.reduce((sum, item) => sum + ((item.discount || 0) * item.quantity), 0);
-    this.total = this.items.reduce((sum, item) => sum + (item.finalPrice * item.quantity), 0);
-    this.itemCount = this.items.reduce((sum, item) => sum + item.quantity, 0);
-    next();
+// ✅ Keep totals as virtuals (computed on read, zero write cost)
+CartSchema.virtual('subtotal').get(function () {
+    return this.items.reduce((sum, item) => sum + item.sellingPrice * item.quantity, 0);
 });
 
+CartSchema.virtual('total').get(function () {
+    // Total calculation logic (ignoring coupon/coins here as they are applied in summary/checkout)
+    return this.items.reduce((sum, item) => sum + item.finalPrice * item.quantity, 0);
+});
+
+CartSchema.virtual('totalDiscount').get(function () {
+    return this.items.reduce((sum, item) => sum + (item.discount || 0) * item.quantity, 0);
+});
+
+CartSchema.virtual('itemCount').get(function () {
+    return this.items.reduce((sum, item) => sum + item.quantity, 0);
+});
+
+// ✅ Indexes for performance
 CartSchema.index({ user: 1 });
+CartSchema.index({ "items.product": 1 }); // speeds up $elemMatch and array queries
 
 export const Cart = mongoose.model<ICart>('Cart', CartSchema);
 

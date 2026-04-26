@@ -75,6 +75,7 @@ const userSchema = new Schema<IUser>(
     passwordChangedAt: Date,
     passwordResetToken: String,
     passwordResetExpires: Date,
+    pushToken: { type: String, trim: true },
     recentlyViewed: [
       {
         type: mongoose.Schema.Types.ObjectId,

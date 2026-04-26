@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import mongoose from "mongoose";
 import { HomePageCMS, IHomePageCMS } from "../models/Home.model";
+import Product from "../models/Product.model";
 import asyncHandler from "../middleware/asyncHandler";
 import ApiError from "../utils/apiError";
 import ApiResponse from "../utils/response";
@@ -14,6 +15,7 @@ import {
     validateSEO,
 } from "../validators/homeValidator";
 import { AuthRequest } from "../types/index";
+import { cacheGet, cacheSet, cacheDel, CACHE_KEYS, CACHE_TTL } from "../config/redis";
 
 /* ---------- Helper Functions ---------- */
 
@@ -272,6 +274,8 @@ export const createHomePage = asyncHandler(
                     await ensureSingleActivePage(updated!._id as mongoose.Types.ObjectId);
                 }
 
+                // Invalidate home page cache
+                await cacheDel(CACHE_KEYS.HOME_PAGE);
 
                 return res.status(200).json(
                     ApiResponse.success(updated, "Home page updated successfully")
@@ -291,6 +295,8 @@ export const createHomePage = asyncHandler(
                 await ensureSingleActivePage(homePage._id as mongoose.Types.ObjectId);
             }
 
+            // Invalidate home page cache
+            await cacheDel(CACHE_KEYS.HOME_PAGE);
 
             return res.status(201).json(
                 ApiResponse.created(homePage, "Home page created successfully")
@@ -354,6 +360,8 @@ export const updateHomePage = asyncHandler(
                 await ensureSingleActivePage(updated!._id as mongoose.Types.ObjectId);
             }
 
+            // Invalidate home page cache
+            await cacheDel(CACHE_KEYS.HOME_PAGE);
 
             return res.status(200).json(
                 ApiResponse.success(updated, "Home page updated successfully")
@@ -374,12 +382,83 @@ export const updateHomePage = asyncHandler(
  */
 export const getActiveHomePage = asyncHandler(
     async (_req: Request, res: Response) => {
-        const homePage = await HomePageCMS.findOne({ isActive: true }).lean();
+        // ── Redis cache check (serves 10K users without touching DB) ──
+        const cached = await cacheGet(CACHE_KEYS.HOME_PAGE);
+        if (cached) {
+            res.set("Cache-Control", "public, max-age=120");
+            res.set("X-Cache", "HIT");
+            return res.status(200).json(ApiResponse.success(cached));
+        }
+
+        const homePage = await HomePageCMS.findOne({ isActive: true }).lean() as any;
 
         if (!homePage) throw ApiError.notFound("No active home page found");
 
-        // Cache for 5 minutes
-        res.set("Cache-Control", "public, max-age=300");
+        // Fetch products tagged for home display
+        const displayProducts = await Product.find({
+            homeDisplaySection: { $ne: "" },
+            isActive: true
+        }).lean() as any[];
+
+        if (displayProducts.length > 0 && homePage.sections) {
+            // Group products by their section heading
+            const productsBySection: Record<string, any[]> = {};
+            displayProducts.forEach(prod => {
+                if (!prod.homeDisplaySection) return;
+                
+                const sectionTag = prod.homeDisplaySection.toLowerCase();
+                if (!productsBySection[sectionTag]) productsBySection[sectionTag] = [];
+                
+                productsBySection[sectionTag].push({
+                    title: prod.name,
+                    subtitle: `₹${prod.sellingPrice}`,
+                    image: {
+                        url: prod.thumbnail?.url || (prod.images && prod.images.length > 0 ? prod.images[0].url : ""),
+                        public_id: prod.thumbnail?.public_id || (prod.images && prod.images.length > 0 ? prod.images[0].public_id : "manual")
+                    },
+                    redirectLink: `/product/${prod.slug}`
+                });
+            });
+
+            // Inject products into existing sections or append them
+            homePage.sections.forEach((section: any) => {
+                if (section.type === "products" && section.products) {
+                    const heading = section.products.heading ? section.products.heading.toLowerCase() : "";
+                    if (heading && productsBySection[heading]) {
+                        // Merge products, avoiding duplicates by redirectLink (more robust than ID if ID is missing in manual entries)
+                        if (!section.products.items) section.products.items = [];
+                        
+                        const existingLinks = new Set(section.products.items.map((it: any) => it.redirectLink));
+                        productsBySection[heading].forEach(prod => {
+                            if (!existingLinks.has(prod.redirectLink)) {
+                                section.products.items.push(prod);
+                            }
+                        });
+                    }
+                } else if (section.type === "quad_grid" && section.quads) {
+                    section.quads.forEach((quad: any) => {
+                        const heading = quad.title ? quad.title.toLowerCase() : "";
+                        if (heading && productsBySection[heading]) {
+                            if (!quad.items) quad.items = [];
+                            
+                            const existingLinks = new Set(quad.items.map((it: any) => it.redirectLink));
+                            productsBySection[heading].forEach(prod => {
+                                if (!existingLinks.has(prod.redirectLink)) {
+                                    // For Single, maybe we only want 1? But adding all and frontend filters based on layout is safer.
+                                    quad.items.push(prod);
+                                }
+                            });
+                        }
+                    });
+                }
+            });
+        }
+
+        // ── Store in Redis cache ──
+        await cacheSet(CACHE_KEYS.HOME_PAGE, homePage, CACHE_TTL.HOME_PAGE);
+
+        res.set("Cache-Control", "public, max-age=120");
+        res.set("X-Cache", "MISS");
         return res.status(200).json(ApiResponse.success(homePage));
     }
 );
@@ -486,6 +565,9 @@ export const deleteHomePage = asyncHandler(
             await deleteMultipleImages(publicIds);
         }
 
+        // Invalidate home page cache
+        await cacheDel(CACHE_KEYS.HOME_PAGE);
+
         return res.status(200).json(
             ApiResponse.success(homePage, "Home page and associated images deleted successfully")
         );
@@ -516,6 +598,9 @@ export const toggleHomePageStatus = asyncHandler(
         if (homePage.isActive) {
             await ensureSingleActivePage(homePage._id as mongoose.Types.ObjectId);
         }
+
+        // Invalidate home page cache
+        await cacheDel(CACHE_KEYS.HOME_PAGE);
 
         return res.status(200).json(
             ApiResponse.success(
@@ -744,6 +829,29 @@ export const updateSection = asyncHandler(async (req: AuthRequest, res: Response
             }
         }
         (homePage.sections[sectionIndex] as any).quads = newQuads;
+    } else if (sectionData.type === 'video_reels') {
+        const newReels = [...(sectionData.videoReels || [])];
+        if (files && files.length > 0) {
+            for (const file of files) {
+                // Expected format: "videoReels.0.video" or "videoReels.0.thumbnail"
+                const match = file.fieldname.match(/videoReels\.(\d+)\.(video|thumbnail)/);
+                if (match) {
+                    const idx = parseInt(match[1]);
+                    const field = match[2] as 'video' | 'thumbnail';
+                    if (newReels[idx]) {
+                        const result = await uploadOnCloudinary(file.path, { folder: "home-cms" });
+                        if (result) {
+                            const oldMedia = currentSection.videoReels?.[idx]?.[field];
+                            if (oldMedia && (oldMedia as any).public_id) {
+                                await deleteFromCloudinary((oldMedia as any).public_id);
+                            }
+                            newReels[idx][field] = { public_id: result.public_id, url: result.secure_url };
+                        }
+                    }
+                }
+            }
+        }
+        (homePage.sections[sectionIndex] as any).videoReels = newReels;
     } else {
         // Banners
         const newBanners = [...(sectionData.banners || [])];
@@ -840,6 +948,10 @@ export const updateHeader = asyncHandler(async (req: AuthRequest, res: Response)
     const homePage = await HomePageCMS.findById(id);
     if (!homePage) throw ApiError.notFound("Home page not found");
 
+    if (req.body.storeName !== undefined) {
+        homePage.storeName = req.body.storeName;
+    }
+
     // Handle Header Logo upload if present
     const files = req.files as Express.Multer.File[];
     if (files && files.length > 0) {
@@ -863,4 +975,269 @@ export const updateHeader = asyncHandler(async (req: AuthRequest, res: Response)
     res.status(200).json(ApiResponse.success(homePage, "Header settings updated"));
 });
 
+/**
+ * Get Home Sections Metadata (for dropdowns)
+ * GET /api/admin/home/sections/metadata
+ */
+export const getHomeSectionsMetadata = asyncHandler(async (req: AuthRequest, res: Response) => {
+    requireAdmin(req);
+    const homePage = await HomePageCMS.findOne({ isActive: true }).lean();
+    if (!homePage) throw ApiError.notFound("No active home page found");
 
+    const sections = homePage.sections.map((s: any) => ({
+        id: s._id,
+        type: s.type,
+        heading: s.products?.heading || (s.type === 'quad_grid' && s.quads?.[0]?.title ? `Quad: ${s.quads[0].title}` : `Section ${s.order}`),
+        order: s.order,
+        quadCards: s.type === 'quad_grid' ? s.quads?.map((q: any, index: number) => ({
+            index,
+            title: q.title || `Card ${index + 1}`
+        })) : (s.type === 'single_product_carousel' ? [0, 1, 2, 3, 4].map(i => ({ index: i, title: `Slot ${i + 1}` })) : [])
+    })).filter(s => s.type === 'products' || s.type === 'quad_grid' || s.type === 'single_product_carousel');
+
+    res.status(200).json(ApiResponse.success(sections, "Home sections fetched"));
+});
+
+/**
+ * Add Product to Home Section
+ * POST /api/admin/home/add-product-to-section
+ */
+export const addProductToHomeSection = asyncHandler(async (req: AuthRequest, res: Response) => {
+    requireAdmin(req);
+    const { productId, sectionId, quadIndex } = req.body;
+
+    if (!productId || !sectionId) {
+        throw ApiError.badRequest("Product ID and Section ID are required");
+    }
+
+    const [homePage, product] = await Promise.all([
+        HomePageCMS.findOne({ isActive: true }),
+        Product.findById(productId) as any
+    ]);
+
+    if (!homePage) throw ApiError.notFound("No active home page found");
+    if (!product) throw ApiError.notFound("Product not found");
+
+    const sectionIndex = homePage.sections.findIndex((s: any) => s._id.toString() === sectionId);
+    if (sectionIndex === -1) throw ApiError.notFound("Section not found");
+
+    const section = homePage.sections[sectionIndex] as any;
+
+    const productImg = {
+        public_id: product.thumbnail?.public_id || (product.images && product.images[0]?.public_id) || "manual",
+        url: product.thumbnail?.url || (product.images && product.images[0]?.url) || ""
+    };
+
+    if (section.type === 'products') {
+        if (!section.products) section.products = { items: [] };
+        if (!section.products.items) section.products.items = [];
+        
+        const newItem = {
+            title: product.name,
+            subtitle: `₹${product.sellingPrice}`,
+            image: productImg,
+            redirectLink: `/product/${product.slug}`
+        };
+
+        // Check for duplicates by matching title or link since id might not be in schema
+        const exists = section.products.items.some((it: any) => it.redirectLink === newItem.redirectLink);
+        if (!exists) {
+            // Optional: add a sensible max limit for horizontal carousels just in case (e.g. 15-20)
+            if (section.products.items.length >= 20) {
+                throw ApiError.badRequest("This product carousel has reached its maximum capacity of 20 items.");
+            }
+            section.products.items.push(newItem);
+        } else {
+             throw ApiError.badRequest("Product already exists in this section");
+        }
+    } 
+    else if (section.type === 'single_product_carousel') {
+        if (!section.products) section.products = { items: [] };
+        // Check if there's already a product here by checking the redirectLink of the first item
+        if (section.products.items && section.products.items.length > 0 && section.products.items[0]?.redirectLink) {
+             throw ApiError.badRequest("This Single Product Carousel is already populated. Please remove the existing product before adding a new one.");
+        }
+        
+        // Replace current items with all product images for carousel effect
+        const images = product.images || [];
+        section.products.items = images.map((img: any) => ({
+            title: product.name,
+            subtitle: `₹${product.sellingPrice}`,
+            image: {
+                public_id: img.public_id || "manual",
+                url: img.url || ""
+            },
+            redirectLink: `/product/${product.slug}`
+        }));
+        if (!section.products.heading) section.products.heading = product.name;
+    }
+    else if (section.type === 'quad_grid') {
+        if (!section.quads || section.quads.length === 0) {
+            throw ApiError.badRequest("Target section is a quad grid but has no cards");
+        }
+        
+        const qIdx = quadIndex !== undefined ? Number(quadIndex) : 0;
+        if (qIdx < 0 || qIdx >= section.quads.length) {
+            throw ApiError.badRequest("Invalid quad index");
+        }
+
+        if (section.quads[qIdx].layout === 'carousel') {
+             // For Carousel, check if already populated
+             if (section.quads[qIdx].items && section.quads[qIdx].items.length > 0 && section.quads[qIdx].items[0]?.redirectLink) {
+                 throw ApiError.badRequest("This Carousel card is already populated. Please remove the existing product first.");
+             }
+            
+            // Add all product images for carousel
+            const images = product.images || [];
+            
+            // For carousel, the first image is the Hero image. If product has no images, fallback to thumbnail.
+            // Some products might only have a thumbnail, so we should inject the thumbnail at least.
+            let validImages = images;
+            if (images.length === 0 && productImg.url) {
+                validImages = [{ url: productImg.url, public_id: productImg.public_id }];
+            }
+
+            section.quads[qIdx].items = validImages.map((img: any) => ({
+                title: product.name,
+                image: {
+                    public_id: img.public_id || "manual",
+                    url: img.url || ""
+                },
+                redirectLink: `/product/${product.slug}`
+            }));
+        } else if (section.quads[qIdx].layout === 'single') {
+            const quadItem = {
+                title: product.name,
+                image: productImg,
+                redirectLink: `/product/${product.slug}`
+            };
+            
+            if (!section.quads[qIdx].items) section.quads[qIdx].items = [];
+            
+            // Validation: Prevent overwrite if it already has a synced product
+            if (section.quads[qIdx].items.length > 0 && section.quads[qIdx].items[0]?.redirectLink?.trim() !== '') {
+                // If it's the exact same product we ignore, or throw error
+                if (section.quads[qIdx].items[0].redirectLink.includes(`/product/${product.slug}`)) {
+                    throw ApiError.badRequest("Product already exists in this single slot.");
+                } else {
+                    throw ApiError.badRequest("Single layout is already full (1/1 slots used). Please unlink the current product first.");
+                }
+            }
+            
+            section.quads[qIdx].items[0] = quadItem;
+            // Trim any excess elements
+            section.quads[qIdx].items.splice(1);
+        } else {
+            // Grid Layout
+            const quadItem = {
+                title: product.name,
+                image: productImg,
+                redirectLink: `/product/${product.slug}`
+            };
+
+            if (!section.quads[qIdx].items) section.quads[qIdx].items = [];
+            
+            // Check if it already exists to avoid duplicates
+            const exists = section.quads[qIdx].items.some((it: any) => it?.redirectLink?.includes(`/product/${product.slug}`));
+            if (!exists) {
+                // Find first empty slot (no redirect link) from indices 0 to 3
+                let emptyIdx = -1;
+                for (let i = 0; i < 4; i++) {
+                    const item = section.quads[qIdx].items[i];
+                    if (!item || !item.redirectLink || item.redirectLink.trim() === '') {
+                        emptyIdx = i;
+                        break;
+                    }
+                }
+                
+                if (emptyIdx !== -1) {
+                    section.quads[qIdx].items[emptyIdx] = quadItem;
+                } else {
+                    // Validation: All 4 slots are full
+                    throw ApiError.badRequest("Grid layout is full (4/4 slots used). Please unlink a product before adding a new one.");
+                }
+            } else {
+                 throw ApiError.badRequest("Product already exists in this Grid");
+            }
+        }
+    }
+
+    await homePage.save();
+    res.status(200).json(ApiResponse.success(homePage, "Product added to home section"));
+});
+
+
+
+/**
+ * Resolve oEmbed URL
+ * POST /api/home/cms/resolve-oembed
+ */
+export const resolveOEmbed = asyncHandler(async (req: AuthRequest, res: Response) => {
+    requireAdmin(req);
+    const { url } = req.body;
+
+    if (!url) {
+        throw ApiError.badRequest("URL is required");
+    }
+
+    let oembedUrl = "";
+    
+    // Determine provider and oEmbed endpoint
+    if (url.includes("youtube.com") || url.includes("youtu.be")) {
+        oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    } else if (url.includes("tiktok.com")) {
+        oembedUrl = `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`;
+    } else if (url.includes("instagram.com")) {
+        // Official Instagram oEmbed usually requires an access token
+        // We'll try common public endpoint first, if provided in env
+        const accessToken = process.env.INSTAGRAM_ACCESS_TOKEN;
+        if (accessToken) {
+            oembedUrl = `https://graph.facebook.com/v10.0/instagram_oembed?url=${encodeURIComponent(url)}&access_token=${accessToken}`;
+        } else {
+            // Fallback to a prediction/simple embed if no token, 
+            // but official one is better. For now we try the v10.0 logic if it's reachable.
+            oembedUrl = `https://www.instagram.com/oembed?url=${encodeURIComponent(url)}`;
+        }
+    }
+
+    if (!oembedUrl) {
+        throw ApiError.badRequest("Unsupported video provider. Please use YouTube, TikTok, or Instagram.");
+    }
+
+    try {
+        const response = await fetch(oembedUrl, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+        });
+        
+        const isInstagram = url.includes("instagram.com");
+
+        if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) {
+            if (isInstagram) {
+                 return res.status(200).json(ApiResponse.success({
+                    title: "Instagram Post",
+                    thumbnail_url: "",
+                    html: `<blockquote class="instagram-media" data-instgrm-permalink="${url}" data-instgrm-version="14"></blockquote><script async src="https://www.instagram.com/embed.js"></script>`,
+                    provider_name: "Instagram"
+                }, "Resolved via fallback generator"));
+            }
+            
+            const errorText = await response.text();
+            console.error(`❌ oEmbed Provider Error (${response.status}):`, errorText.substring(0, 200));
+            throw new Error(response.ok ? "Provider returned non-JSON content" : `Provider returned ${response.status}`);
+        }
+        
+        const data: any = await response.json();
+
+        return res.status(200).json(ApiResponse.success({
+            title: data.title || "",
+            thumbnail_url: data.thumbnail_url || "",
+            html: data.html || "",
+            provider_name: data.provider_name || ""
+        }, "URL resolved successfully"));
+    } catch (error: any) {
+        console.error("❌ oEmbed Resolution Error:", error);
+        throw ApiError.badRequest(`Failed to resolve URL: ${error.message}`);
+    }
+});

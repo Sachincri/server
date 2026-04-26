@@ -20,7 +20,20 @@ export interface ICarouselItem {
   redirectLink?: string;
 }
 
-export type SectionType = 'banner1' | 'banner2' | 'banner3' | 'products' | 'quad_grid';
+export interface IVideoReel {
+  video: ImageLink;
+  thumbnail?: ImageLink;
+  title?: string;
+  subtitle?: string;
+  redirectLink?: string;
+  productId?: string;
+  duration?: number; // seconds (max 60)
+  oembedUrl?: string;
+  oembedHtml?: string;
+  isOEmbed?: boolean;
+}
+
+export type SectionType = 'banner1' | 'banner2' | 'banner3' | 'products' | 'quad_grid' | 'single_product_carousel' | 'video_reels';
 
 export interface IQuadItem {
   image: ImageLink;
@@ -33,6 +46,7 @@ export interface IQuadCard {
   items: IQuadItem[];
   redirectLink: string;
   redirectText: string;
+  layout?: 'grid' | 'single' | 'carousel';
 }
 
 export interface IProductsSection {
@@ -46,8 +60,10 @@ export interface ISection {
   banners?: IBanner[];
   products?: IProductsSection;
   quads?: IQuadCard[];
+  videoReels?: IVideoReel[];
   bgColor?: string;
   bgGradient?: string;
+  mobileColumns?: 1 | 2;
   _id?: string;
 }
 

@@ -29,7 +29,7 @@ interface FilterQuery {
 class SearchFeatures {
   public query: Query<any[], any>;
   private queryStr: QueryString;
-  private readonly EXCLUDED_FIELDS = ["keyword", "page", "limit"];
+  private readonly EXCLUDED_FIELDS = ["keyword", "page", "limit", "sort", "fields"];
   private readonly MULTI_VALUE_FIELDS = ["brand", "category", "subCategory"];
 
   constructor(query: Query<any[], any>, queryStr: QueryString) {
@@ -43,27 +43,24 @@ class SearchFeatures {
    * @returns {SearchFeatures} Returns this for method chaining
    */
   search(): this {
-    if (!this.queryStr.keyword) {
+    if (!this.queryStr.keyword?.toString().trim()) {
       return this;
     }
 
-    const keyword = this.queryStr.keyword.toString().trim();
+    const keyword = this.queryStr.keyword
+      .toString()
+      .trim()
+      .slice(0, 80)
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    if (keyword.length === 0) {
-      return this;
-    }
-
-    // Escape special regex characters to prevent errors with keywords like "("
-    const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-    // Search primarily by name for performance and relevance
-    const searchQuery: FilterQuery = {
+    // Use regex search instead of $text for partial string matching and autocomplete support
+    this.query = this.query.find({
       $or: [
-        { name: { $regex: escapedKeyword, $options: "i" } },
-      ],
-    };
-
-    this.query = this.query.find(searchQuery);
+        { name: { $regex: keyword, $options: "i" } },
+        { description: { $regex: keyword, $options: "i" } },
+        { "seo.keywords": { $regex: keyword, $options: "i" } }
+      ]
+    });
     return this;
   }
 
@@ -99,8 +96,8 @@ class SearchFeatures {
       }
     });
 
-    // Handle empty query case
     if (Object.keys(queryCopy).length === 0) {
+      this.query = this.query.find({ isActive: true });
       return this;
     }
 
@@ -215,6 +212,9 @@ class SearchFeatures {
       }
       delete filterObject.inStock;
     }
+
+    // ✅ Force only active products (Critical for performance + business logic)
+    filterObject.isActive = true;
 
     this.query = this.query.find(filterObject);
     return this;

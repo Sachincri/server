@@ -26,6 +26,11 @@ export interface OrderOptions {
   shippingPrice: number;
   totalPrice: number;
   user: string;
+  paymentInfo?: {
+    id?: string;
+    status?: string;
+    method?: string;
+  };
 }
 
 export interface RazorpayOrderOptions {

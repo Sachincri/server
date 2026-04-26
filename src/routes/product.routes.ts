@@ -22,7 +22,7 @@ router.use(protect);
 router.put('/recentlyviewed', productController.addToRecentlyViewed);
 
 // Review routes (accessible to all authenticated users)
-router.put('/review', productController.createProductReview);
+router.put('/review', upload.any(), productController.createProductReview);
 router.delete('/review', productController.deleteReview);
 
 router.use(restrictTo('seller', 'admin'));

@@ -1,6 +1,6 @@
 import { UploadApiResponse, UploadApiOptions } from "cloudinary";
 import cloudinary from "../config/env";
-import fs from "fs";
+import { promises as fs } from "fs";
 
 export const uploadOnCloudinary = async (
   localFilePath: string,
@@ -14,11 +14,11 @@ export const uploadOnCloudinary = async (
       { resource_type: "auto", ...options }
     );
 
-    fs.unlinkSync(localFilePath);
+    await fs.unlink(localFilePath).catch(() => undefined);
     return response;
   } catch (error: any) {
     console.error("Cloudinary upload error:", error.message);
-    if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
+    await fs.unlink(localFilePath).catch(() => undefined);
     return null;
   }
 };

@@ -9,6 +9,8 @@ import ApiResponse from "../utils/response";
 import User from "../models/User.model";
 import Product from "../models/Product.model";
 import Order from "../models/Order.model";
+import { Cart } from "../models/Cart.model";
+import Settings from "../models/Settings.model";
 
 // Optional: Redis for caching
 // import { redisClient } from "../config/redis";
@@ -37,12 +39,23 @@ export const getAdminDashboard = asyncHandler(
     const prevSevenDaysAgo = subDays(sevenDaysAgo, 7);
     const prevThirtyDaysAgo = subDays(thirtyDaysAgo, 30);
 
-    // ---- Core Metrics with Comparison ----
+    // Fetch tax settings
+    const appSettings = await Settings.findOne().sort({ createdAt: -1 }).lean();
+    const taxEnabled = appSettings?.taxEnabled ?? false;
+    const gstRate = taxEnabled ? (appSettings?.gstRate ?? 18) / 100 : 0; // e.g. 0.18
+    const taxRate = taxEnabled ? (appSettings?.taxRate ?? 0) / 100 : 0; // e.g. 0.05
+    const combinedTaxRate = gstRate + taxRate;
+    const gatewayFeeRate = taxEnabled ? (appSettings?.gatewayFeeRate ?? 2) / 100 : 0; // e.g. 0.02
+
     const [
+      uncategorizedCount,
+      paymentMethodAgg,
+      refundsAgg,
       totalUsers,
       totalProducts,
-      lowStockProducts, // This is now an array of products
+      lowStockProducts,
       totalOrders,
+      abandonedCarts,
       revenueAgg,
       ordersByStatus,
       todayMetrics,
@@ -57,8 +70,38 @@ export const getAdminDashboard = asyncHandler(
       regionalSalesAgg,
       recentOrders,
       recentUsers,
-      satisfactionAgg
-    ] = await Promise.all([
+      satisfactionAgg,
+      productAlertsAgg
+    ] = (await Promise.all([
+
+      // Uncategorized products
+      Product.countDocuments({
+        $or: [
+          { category: null },
+          { category: { $exists: false } }
+        ]
+      }),
+      // Payment method breakdown
+      Order.aggregate([
+        { $match: { orderStatus: { $nin: ["Cancelled", "Returned", "Refunded", "refunded"] } } },
+        {
+          $group: {
+            _id: "$paymentInfo.method",
+            count: { $sum: 1 },
+            amount: { $sum: "$totalPrice" }
+          }
+        }
+      ]),
+      // Refunds aggregation
+      Order.aggregate([
+        { $match: { orderStatus: { $in: ["Cancelled", "Returned", "Refunded", "refunded"] } } },
+        {
+          $group: {
+            _id: null,
+            totalRefunds: { $sum: "$totalPrice" }
+          }
+        }
+      ]),
       // Basic counts
       User.countDocuments(),
       Product.countDocuments({ isActive: true }),
@@ -66,8 +109,9 @@ export const getAdminDashboard = asyncHandler(
         .limit(5)
         .select("name stock price"),
       Order.countDocuments(),
+      Cart.countDocuments({ items: { $exists: true, $not: { $size: 0 } } }),
 
-      // Total revenue (all time)
+      // Total revenue (all time) + Deductions Breakdown
       Order.aggregate([
         { $match: { orderStatus: { $nin: ["Cancelled", "Returned", "Refunded", "refunded"] } } },
         {
@@ -77,7 +121,16 @@ export const getAdminDashboard = asyncHandler(
                 $map: {
                   input: "$orderItems",
                   as: "item",
-                  in: { $multiply: [{ $ifNull: ["$$item.actualPrice", 0] }, "$$item.quantity"] }
+                  in: { $multiply: [{ $cond: { if: { $gt: ["$$item.actualPrice", 0] }, then: "$$item.actualPrice", else: { $multiply: ["$$item.sellingPrice", 0.6] } } }, "$$item.quantity"] }
+                }
+              }
+            },
+            grossSales: {
+              $sum: {
+                $map: {
+                  input: "$orderItems",
+                  as: "item",
+                  in: { $multiply: ["$$item.sellingPrice", "$$item.quantity"] }
                 }
               }
             }
@@ -87,7 +140,13 @@ export const getAdminDashboard = asyncHandler(
           $group: {
             _id: null,
             totalRevenue: { $sum: "$totalPrice" },
-            totalProfit: { $sum: { $subtract: ["$totalPrice", "$orderCost"] } }
+            totalProfit: { $sum: { $subtract: [{ $subtract: [{ $subtract: ["$totalPrice", { $ifNull: ["$shippingPrice", 0] }] }, { $add: ["$orderCost", { $multiply: ["$itemsPrice", combinedTaxRate] }] }] }, { $multiply: ["$totalPrice", gatewayFeeRate] }] } },
+            totalGrossSales: { $sum: "$grossSales" },
+            totalCOGS: { $sum: "$orderCost" },
+            totalDiscounts: { $sum: { $ifNull: ["$redeemCoins", 0] } },
+            totalShipping: { $sum: { $ifNull: ["$shippingPrice", 0] } },
+            totalTax: { $sum: { $multiply: ["$itemsPrice", combinedTaxRate] } },
+            totalGatewayFee: { $sum: { $multiply: ["$totalPrice", gatewayFeeRate] } },
           }
         },
       ]),
@@ -112,7 +171,7 @@ export const getAdminDashboard = asyncHandler(
                 $map: {
                   input: "$orderItems",
                   as: "item",
-                  in: { $multiply: [{ $ifNull: ["$$item.actualPrice", 0] }, "$$item.quantity"] }
+                  in: { $multiply: [{ $cond: { if: { $gt: ["$$item.actualPrice", 0] }, then: "$$item.actualPrice", else: { $multiply: ["$$item.sellingPrice", 0.6] } } }, "$$item.quantity"] }
                 }
               }
             }
@@ -123,7 +182,7 @@ export const getAdminDashboard = asyncHandler(
             _id: null,
             orders: { $sum: 1 },
             revenue: { $sum: "$totalPrice" },
-            profit: { $sum: { $subtract: ["$totalPrice", "$orderCost"] } }
+            profit: { $sum: { $subtract: [{ $subtract: [{ $subtract: ["$totalPrice", { $ifNull: ["$shippingPrice", 0] }] }, { $add: ["$orderCost", { $multiply: ["$itemsPrice", combinedTaxRate] }] }] }, { $multiply: ["$totalPrice", gatewayFeeRate] }] } }
           },
         },
       ]),
@@ -143,7 +202,7 @@ export const getAdminDashboard = asyncHandler(
                 $map: {
                   input: "$orderItems",
                   as: "item",
-                  in: { $multiply: [{ $ifNull: ["$$item.actualPrice", 0] }, "$$item.quantity"] }
+                  in: { $multiply: [{ $cond: { if: { $gt: ["$$item.actualPrice", 0] }, then: "$$item.actualPrice", else: { $multiply: ["$$item.sellingPrice", 0.6] } } }, "$$item.quantity"] }
                 }
               }
             }
@@ -154,7 +213,7 @@ export const getAdminDashboard = asyncHandler(
             _id: null,
             orders: { $sum: 1 },
             revenue: { $sum: "$totalPrice" },
-            profit: { $sum: { $subtract: ["$totalPrice", "$orderCost"] } }
+            profit: { $sum: { $subtract: [{ $subtract: [{ $subtract: ["$totalPrice", { $ifNull: ["$shippingPrice", 0] }] }, { $add: ["$orderCost", { $multiply: ["$itemsPrice", combinedTaxRate] }] }] }, { $multiply: ["$totalPrice", gatewayFeeRate] }] } }
           },
         },
       ]),
@@ -174,7 +233,7 @@ export const getAdminDashboard = asyncHandler(
                 $map: {
                   input: "$orderItems",
                   as: "item",
-                  in: { $multiply: [{ $ifNull: ["$$item.actualPrice", 0] }, "$$item.quantity"] }
+                  in: { $multiply: [{ $cond: { if: { $gt: ["$$item.actualPrice", 0] }, then: "$$item.actualPrice", else: { $multiply: ["$$item.sellingPrice", 0.6] } } }, "$$item.quantity"] }
                 }
               }
             }
@@ -185,7 +244,7 @@ export const getAdminDashboard = asyncHandler(
             _id: null,
             orders: { $sum: 1 },
             revenue: { $sum: "$totalPrice" },
-            profit: { $sum: { $subtract: ["$totalPrice", "$orderCost"] } }
+            profit: { $sum: { $subtract: [{ $subtract: [{ $subtract: ["$totalPrice", { $ifNull: ["$shippingPrice", 0] }] }, { $add: ["$orderCost", { $multiply: ["$itemsPrice", combinedTaxRate] }] }] }, { $multiply: ["$totalPrice", gatewayFeeRate] }] } }
           },
         },
       ]),
@@ -205,7 +264,7 @@ export const getAdminDashboard = asyncHandler(
                 $map: {
                   input: "$orderItems",
                   as: "item",
-                  in: { $multiply: [{ $ifNull: ["$$item.actualPrice", 0] }, "$$item.quantity"] }
+                  in: { $multiply: [{ $cond: { if: { $gt: ["$$item.actualPrice", 0] }, then: "$$item.actualPrice", else: { $multiply: ["$$item.sellingPrice", 0.6] } } }, "$$item.quantity"] }
                 }
               }
             }
@@ -216,7 +275,7 @@ export const getAdminDashboard = asyncHandler(
             _id: null,
             orders: { $sum: 1 },
             revenue: { $sum: "$totalPrice" },
-            profit: { $sum: { $subtract: ["$totalPrice", "$orderCost"] } }
+            profit: { $sum: { $subtract: [{ $subtract: [{ $subtract: ["$totalPrice", { $ifNull: ["$shippingPrice", 0] }] }, { $add: ["$orderCost", { $multiply: ["$itemsPrice", combinedTaxRate] }] }] }, { $multiply: ["$totalPrice", gatewayFeeRate] }] } }
           },
         },
       ]),
@@ -236,7 +295,7 @@ export const getAdminDashboard = asyncHandler(
                 $map: {
                   input: "$orderItems",
                   as: "item",
-                  in: { $multiply: [{ $ifNull: ["$$item.actualPrice", 0] }, "$$item.quantity"] }
+                  in: { $multiply: [{ $cond: { if: { $gt: ["$$item.actualPrice", 0] }, then: "$$item.actualPrice", else: { $multiply: ["$$item.sellingPrice", 0.6] } } }, "$$item.quantity"] }
                 }
               }
             }
@@ -247,7 +306,7 @@ export const getAdminDashboard = asyncHandler(
             _id: null,
             orders: { $sum: 1 },
             revenue: { $sum: "$totalPrice" },
-            profit: { $sum: { $subtract: ["$totalPrice", "$orderCost"] } }
+            profit: { $sum: { $subtract: [{ $subtract: [{ $subtract: ["$totalPrice", { $ifNull: ["$shippingPrice", 0] }] }, { $add: ["$orderCost", { $multiply: ["$itemsPrice", combinedTaxRate] }] }] }, { $multiply: ["$totalPrice", gatewayFeeRate] }] } }
           },
         },
       ]),
@@ -267,7 +326,7 @@ export const getAdminDashboard = asyncHandler(
                 $map: {
                   input: "$orderItems",
                   as: "item",
-                  in: { $multiply: [{ $ifNull: ["$$item.actualPrice", 0] }, "$$item.quantity"] }
+                  in: { $multiply: [{ $cond: { if: { $gt: ["$$item.actualPrice", 0] }, then: "$$item.actualPrice", else: { $multiply: ["$$item.sellingPrice", 0.6] } } }, "$$item.quantity"] }
                 }
               }
             }
@@ -278,7 +337,7 @@ export const getAdminDashboard = asyncHandler(
             _id: null,
             orders: { $sum: 1 },
             revenue: { $sum: "$totalPrice" },
-            profit: { $sum: { $subtract: ["$totalPrice", "$orderCost"] } }
+            profit: { $sum: { $subtract: [{ $subtract: [{ $subtract: ["$totalPrice", { $ifNull: ["$shippingPrice", 0] }] }, { $add: ["$orderCost", { $multiply: ["$itemsPrice", combinedTaxRate] }] }] }, { $multiply: ["$totalPrice", gatewayFeeRate] }] } }
           },
         },
       ]),
@@ -300,7 +359,7 @@ export const getAdminDashboard = asyncHandler(
               $sum: { $multiply: ["$orderItems.quantity", { $ifNull: ["$orderItems.sellingPrice", 0] }] },
             },
             totalCost: {
-              $sum: { $multiply: ["$orderItems.quantity", { $ifNull: ["$orderItems.actualPrice", 0] }] }
+              $sum: { $multiply: ["$orderItems.quantity", { $cond: { if: { $gt: ["$orderItems.actualPrice", 0] }, then: "$orderItems.actualPrice", else: { $multiply: ["$orderItems.sellingPrice", 0.6] } } }] }
             }
           },
         },
@@ -327,33 +386,36 @@ export const getAdminDashboard = asyncHandler(
         },
       ]),
 
-      // New vs Returning Customers (last 30 days)
-      User.aggregate([
+      // Customer Segmentation Analytics (last 30 days)
+      Order.aggregate([
         {
-          $facet: {
-            newCustomers: [
-              { $match: { createdAt: { $gte: thirtyDaysAgo } } },
-              { $count: "count" },
-            ],
-            returningCustomers: [
-              { $match: { createdAt: { $lt: thirtyDaysAgo } } },
-              {
-                $lookup: {
-                  from: "orders",
-                  localField: "_id",
-                  foreignField: "user",
-                  as: "recentOrders",
-                },
-              },
-              {
-                $match: {
-                  "recentOrders.createdAt": { $gte: thirtyDaysAgo },
-                },
-              },
-              { $count: "count" },
-            ],
+          $match: {
+            orderStatus: { $nin: ["Cancelled", "Returned", "Refunded", "refunded"] },
+            createdAt: { $gte: thirtyDaysAgo },
           },
         },
+        {
+          $group: {
+            _id: "$user",
+            totalSpent: { $sum: "$totalPrice" },
+            orderCount: { $sum: 1 },
+          },
+        },
+        {
+          $lookup: {
+            from: "users",
+            localField: "_id",
+            foreignField: "_id",
+            as: "userDoc",
+          },
+        },
+        { $unwind: "$userDoc" },
+        {
+          $addFields: {
+            isNew: { $gte: ["$userDoc.createdAt", thirtyDaysAgo] },
+          },
+        },
+        { $sort: { totalSpent: -1 } }, // High spenders first
       ]),
 
       // Average Order Value
@@ -374,6 +436,7 @@ export const getAdminDashboard = asyncHandler(
           $group: {
             _id: "$shippingInfo.state",
             revenue: { $sum: "$totalPrice" },
+            shippingCost: { $sum: "$shippingPrice" },
             orders: { $sum: 1 }
           }
         },
@@ -391,12 +454,62 @@ export const getAdminDashboard = asyncHandler(
         .limit(5)
         .select("name email createdAt"),
 
-      // Customer Satisfaction rating (Average of all product ratings)
+      // Customer Satisfaction rating (Weighted average of all rated products)
       Product.aggregate([
-        { $match: { isActive: true } },
-        { $group: { _id: null, avgRating: { $avg: "$ratings.average" } } }
+        { $match: { isActive: true, "ratings.count": { $gt: 0 } } },
+        {
+          $group: {
+            _id: null,
+            totalWeightedRating: { $sum: { $multiply: ["$ratings.average", "$ratings.count"] } },
+            totalReviews: { $sum: "$ratings.count" }
+          }
+        },
+        {
+          $project: {
+            avgRating: { 
+              $cond: [
+                { $gt: ["$totalReviews", 0] },
+                { $divide: ["$totalWeightedRating", "$totalReviews"] },
+                0
+              ]
+            }
+          }
+        }
+      ]),
+
+      // Product Quality Alerts: low-rated or high-refund products
+      Order.aggregate([
+        { $match: { orderStatus: { $in: ["Returned", "Refunded", "refunded"] } } },
+        { $unwind: "$orderItems" },
+        {
+          $group: {
+            _id: "$orderItems.product",
+            refundCount: { $sum: 1 },
+            productName: { $first: "$orderItems.name" },
+          }
+        },
+        {
+          $lookup: {
+            from: "products",
+            localField: "_id",
+            foreignField: "_id",
+            as: "prod"
+          }
+        },
+        { $unwind: { path: "$prod", preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            productId: "$_id",
+            productName: { $ifNull: ["$prod.name", "$productName"] },
+            rating: { $ifNull: ["$prod.ratings.average", 0] },
+            refundCount: 1,
+          }
+        },
+        { $match: { $or: [{ rating: { $lt: 3 } }, { refundCount: { $gte: 2 } }] } },
+        { $sort: { refundCount: -1 } },
+        { $limit: 5 }
       ])
-    ]);
+    ]));
 
     // Process results
     const totalRevenue = revenueAgg.length > 0 ? revenueAgg[0].totalRevenue : 0;
@@ -410,6 +523,7 @@ export const getAdminDashboard = asyncHandler(
     const regionalSales = (regionalSalesAgg as any[] || []).map(r => ({
       region: r._id || "Unknown",
       revenue: r.revenue,
+      shippingCost: r.shippingCost || 0,
       orders: r.orders
     }));
 
@@ -426,13 +540,28 @@ export const getAdminDashboard = asyncHandler(
     const last30Data = last30DaysMetrics[0] || { orders: 0, revenue: 0, profit: 0 };
     const prev30Data = prev30DaysMetrics[0] || { orders: 0, revenue: 0, profit: 0 };
 
-    const customerData = customerMetrics[0] || {
-      newCustomers: [{ count: 0 }],
-      returningCustomers: [{ count: 0 }],
-    };
+    // Segment customers
+    const activeShoppers = customerMetrics as any[];
+    const vipThresholdIndex = Math.max(0, Math.floor(activeShoppers.length * 0.1) - 1);
+
+    let newCust = 0;
+    let returningCust = 0;
+    let vipCust = 0;
+
+    activeShoppers.forEach((shopper, index) => {
+      // Top 10% by spend who bought something are VIP
+      if (index <= vipThresholdIndex && shopper.totalSpent > 0 && activeShoppers.length >= 5) {
+        vipCust++;
+      } else if (shopper.isNew) {
+        newCust++;
+      } else {
+        returningCust++;
+      }
+    });
 
     // ---- Time-series builders ----
     const buildDailySeries = async (from: Date, to: Date) => {
+      // Main revenue pipeline (excludes cancelled/returned)
       const docs = (await Order.aggregate([
         {
           $match: {
@@ -447,7 +576,7 @@ export const getAdminDashboard = asyncHandler(
                 $map: {
                   input: "$orderItems",
                   as: "item",
-                  in: { $multiply: [{ $ifNull: ["$$item.actualPrice", 0] }, "$$item.quantity"] }
+                  in: { $multiply: [{ $cond: { if: { $gt: ["$$item.actualPrice", 0] }, then: "$$item.actualPrice", else: { $multiply: ["$$item.sellingPrice", 0.6] } } }, "$$item.quantity"] }
                 }
               }
             }
@@ -459,6 +588,9 @@ export const getAdminDashboard = asyncHandler(
               $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
             },
             orders: { $sum: 1 },
+            grossSales: { $sum: "$itemsPrice" },
+            coinDiscount: { $sum: "$redeemCoins" },
+            shippingFees: { $sum: "$shippingPrice" },
             revenue: { $sum: "$totalPrice" },
             cost: { $sum: "$orderCost" },
             customers: { $addToSet: "$user" },
@@ -467,19 +599,58 @@ export const getAdminDashboard = asyncHandler(
         { $sort: { _id: 1 } },
       ])) as any[];
 
+      // Refund pipeline: Returned/Refunded orders on the day they were cancelled/returned
+      const refundDocs = (await Order.aggregate([
+        {
+          $match: {
+            orderStatus: { $in: ["Returned", "Refunded", "refunded"] },
+            updatedAt: { $gte: from, $lte: to },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              $dateToString: { format: "%Y-%m-%d", date: "$updatedAt" },
+            },
+            refundAmount: { $sum: "$totalPrice" },
+            refundCount: { $sum: 1 },
+          },
+        },
+      ])) as any[];
+
       const dataMap = new Map(docs.map((d) => [d._id, d]));
+      const refundMap = new Map(refundDocs.map((d) => [d._id, d]));
       const allDays = eachDayOfInterval({ start: from, end: to });
 
       return allDays.map((date) => {
         const dateStr = format(date, "yyyy-MM-dd");
         const existing = dataMap.get(dateStr);
+        const refund = refundMap.get(dateStr);
+        const grossSales = existing ? existing.grossSales : 0;
+        const coinDiscount = existing ? existing.coinDiscount : 0;
+        const shippingFees = existing ? existing.shippingFees : 0;
         const revenue = existing ? existing.revenue : 0;
         const cost = existing ? existing.cost : 0;
+        const refundAmount = refund ? refund.refundAmount : 0;
+        const taxAmount = grossSales * combinedTaxRate;
+        const gatewayFeeAmount = revenue * gatewayFeeRate;
+        
+        const netRevenue = revenue - refundAmount;
+        const netProfit = netRevenue - shippingFees - cost - taxAmount - gatewayFeeAmount;
+        
         return {
           date: dateStr,
           orders: existing ? existing.orders : 0,
-          revenue: revenue,
-          profit: revenue - cost,
+          grossSales,
+          coinDiscount,
+          shippingFees,
+          revenue: netRevenue,
+          cost,
+          tax: taxAmount,
+          gatewayFee: gatewayFeeAmount,
+          profit: netProfit,
+          refunds: refundAmount,
+          refundCount: refund ? refund.refundCount : 0,
           customers: existing ? existing.customers.length : 0,
         };
       });
@@ -500,7 +671,7 @@ export const getAdminDashboard = asyncHandler(
                 $map: {
                   input: "$orderItems",
                   as: "item",
-                  in: { $multiply: [{ $ifNull: ["$$item.actualPrice", 0] }, "$$item.quantity"] }
+                  in: { $multiply: [{ $cond: { if: { $gt: ["$$item.actualPrice", 0] }, then: "$$item.actualPrice", else: { $multiply: ["$$item.sellingPrice", 0.6] } } }, "$$item.quantity"] }
                 }
               }
             }
@@ -512,6 +683,9 @@ export const getAdminDashboard = asyncHandler(
               $dateToString: { format: "%Y-%m", date: "$createdAt" },
             },
             orders: { $sum: 1 },
+            grossSales: { $sum: "$itemsPrice" },
+            coinDiscount: { $sum: "$redeemCoins" },
+            shippingFees: { $sum: "$shippingPrice" },
             revenue: { $sum: "$totalPrice" },
             cost: { $sum: "$orderCost" },
             customers: { $addToSet: "$user" },
@@ -520,19 +694,57 @@ export const getAdminDashboard = asyncHandler(
         { $sort: { _id: 1 } },
       ])) as any[];
 
+      const refundDocs = (await Order.aggregate([
+        {
+          $match: {
+            orderStatus: { $in: ["Returned", "Refunded", "refunded"] },
+            updatedAt: { $gte: from, $lte: to },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              $dateToString: { format: "%Y-%m", date: "$updatedAt" },
+            },
+            refundAmount: { $sum: "$totalPrice" },
+            refundCount: { $sum: 1 },
+          },
+        },
+      ])) as any[];
+
       const dataMap = new Map(docs.map((d) => [d._id, d]));
+      const refundMap = new Map(refundDocs.map((d) => [d._id, d]));
       const allMonths = eachMonthOfInterval({ start: from, end: to });
 
       return allMonths.map((month) => {
         const monthStr = format(month, "yyyy-MM");
         const existing = dataMap.get(monthStr);
+        const refund = refundMap.get(monthStr);
+        const grossSales = existing ? existing.grossSales : 0;
+        const coinDiscount = existing ? existing.coinDiscount : 0;
+        const shippingFees = existing ? existing.shippingFees : 0;
         const revenue = existing ? existing.revenue : 0;
         const cost = existing ? existing.cost : 0;
+        const refundAmount = refund ? refund.refundAmount : 0;
+        const taxAmount = grossSales * combinedTaxRate;
+        const gatewayFeeAmount = revenue * gatewayFeeRate;
+        
+        const netRevenue = revenue - refundAmount;
+        const netProfit = netRevenue - shippingFees - cost - taxAmount - gatewayFeeAmount;
+        
         return {
           month: monthStr,
           orders: existing ? existing.orders : 0,
-          revenue: revenue,
-          profit: revenue - cost,
+          grossSales,
+          coinDiscount,
+          shippingFees,
+          revenue: netRevenue,
+          cost,
+          tax: taxAmount,
+          gatewayFee: gatewayFeeAmount,
+          profit: netProfit,
+          refunds: refundAmount,
+          refundCount: refund ? refund.refundCount : 0,
           customers: existing ? existing.customers.length : 0,
         };
       });
@@ -557,11 +769,24 @@ export const getAdminDashboard = asyncHandler(
           lowStockProducts: lowStockProducts.length, // Just the count for the summary
           lowStockDetails: lowStockProducts, // Actual product details
           orders: totalOrders,
+          abandonedCarts: abandonedCarts,
+          uncategorizedCount,
+          paymentMethods: paymentMethodAgg,
           revenue: totalRevenue,
           profit: totalProfit,
           avgOrderValue: avgOrderValue[0]?.avgOrderValue || 0,
-          conversionRate: totalUsers > 0 ? Number(((totalOrders / totalUsers) * 100).toFixed(2)) : 0,
+          conversionRate: (() => {
+            // Unique sessions = registered users + anonymous cart intents
+            const uniqueSessions = totalUsers + abandonedCarts;
+            return uniqueSessions > 0 ? Number(((totalOrders / uniqueSessions) * 100).toFixed(2)) : 0;
+          })(),
           customerSatisfaction: satisfactionAgg[0]?.avgRating || 4.5,
+          taxSettings: {
+            taxEnabled,
+            gstRate: taxEnabled ? (appSettings?.gstRate ?? 18) : 0,
+            taxRate: taxEnabled ? (appSettings?.taxRate ?? 0) : 0,
+            gatewayFeeRate: taxEnabled ? (appSettings?.gatewayFeeRate ?? 2) : 0,
+          },
         },
         realTime: {
           today: {
@@ -596,8 +821,9 @@ export const getAdminDashboard = asyncHandler(
           },
         },
         customers: {
-          newCustomers: customerData.newCustomers[0]?.count || 0,
-          returningCustomers: customerData.returningCustomers[0]?.count || 0,
+          newCustomers: newCust,
+          returningCustomers: returningCust,
+          vipCustomers: vipCust,
         },
         ordersByStatus: ordersStatusMap,
         byRegion: regionalSales,
@@ -628,6 +854,23 @@ export const getAdminDashboard = asyncHandler(
             series: last12MonthsSeries,
           },
         },
+        deductions: {
+          grossSales: revenueAgg[0]?.totalGrossSales || 0,
+          cogs: revenueAgg[0]?.totalCOGS || 0,
+          totalTax: revenueAgg[0]?.totalTax || 0,
+          totalGatewayFee: revenueAgg[0]?.totalGatewayFee || 0,
+          totalDiscounts: revenueAgg[0]?.totalDiscounts || 0,
+          totalShipping: revenueAgg[0]?.totalShipping || 0,
+          totalRefunds: refundsAgg[0] ? refundsAgg[0].totalRefunds : 0,
+          netProfit: totalProfit,
+        },
+        productAlerts: (productAlertsAgg as any[] || []).map((a: any) => ({
+          productId: a.productId,
+          productName: a.productName,
+          rating: Number((a.rating || 0).toFixed(1)),
+          refundCount: a.refundCount,
+          alertType: a.rating < 3 && a.refundCount >= 2 ? 'critical' : a.rating < 3 ? 'low_rating' : 'high_refunds',
+        })),
       },
     };
 
@@ -693,7 +936,7 @@ export const getProductAnalytics = asyncHandler(
                 $group: {
                   _id: null,
                   revenue: { $sum: { $multiply: ["$orderItems.sellingPrice", "$orderItems.quantity"] } },
-                  cost: { $sum: { $multiply: [{ $ifNull: ["$orderItems.actualPrice", 0] }, "$orderItems.quantity"] } }
+                  cost: { $sum: { $multiply: [{ $cond: { if: { $gt: ["$orderItems.actualPrice", 0] }, then: "$orderItems.actualPrice", else: { $multiply: ["$orderItems.sellingPrice", 0.6] } } }, "$orderItems.quantity"] } }
                 }
               }
             ],
@@ -726,7 +969,8 @@ export const getProductAnalytics = asyncHandler(
       topCategories: categoryBreakdown.map(c => ({
         name: c.name,
         count: c.count,
-        revenue: c.revenue
+        revenue: c.revenue,
+        profit: c.profit || 0
       }))
     };
 

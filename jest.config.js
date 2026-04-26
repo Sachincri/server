@@ -15,6 +15,7 @@ module.exports = {
     ],
     moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
+        '^expo-server-sdk$': '<rootDir>/tests/mocks/expo-server-sdk.ts',
     },
     setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
     testTimeout: 30000,
@@ -28,7 +29,7 @@ module.exports = {
         '!src/utils/createIndexes.ts',
         '!src/types/**',
     ],
-    coverageThresholds: {
+    coverageThreshold: {
         global: {
             lines: 60,
             functions: 60,

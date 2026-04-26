@@ -60,11 +60,12 @@ export const getMyReviews = asyncHandler(
 
 export const updateProfile = asyncHandler(
   async (req: AuthRequest, res: Response) => {
-    const { name, phone } = req.body;
+    const { name, phone, pushToken } = req.body;
 
     const updateData: any = {};
     if (name) updateData.name = name;
     if (phone) updateData.phone = phone;
+    if (pushToken) updateData.pushToken = pushToken;
 
     const user = await User.findByIdAndUpdate(req.user!._id, updateData, {
       new: true,

@@ -15,16 +15,20 @@ let mongoReplSet: MongoMemoryReplSet;
 jest.setTimeout(60000);
 beforeAll(async () => {
     // Start in-memory MongoDB as a replica set
-    mongoReplSet = await MongoMemoryReplSet.create({
-        replSet: {
-            count: 1,
-            storageEngine: 'wiredTiger',
-        },
-        instanceOpts: [{
-            // Increase timeout for slower environments
-            launchTimeout: 30000,
-        }],
-    });
+    try {
+        mongoReplSet = await MongoMemoryReplSet.create({
+            replSet: {
+                count: 1,
+                storageEngine: 'wiredTiger',
+            },
+            instanceOpts: [{
+                // Increase timeout for slower environments
+                launchTimeout: 30000,
+            }],
+        });
+    } catch (error: any) {
+        throw new Error(`MongoMemoryReplSet failed to start: ${error.message}`);
+    }
     const mongoUri = mongoReplSet.getUri();
     console.log('Mongo URI:', mongoUri);
 
@@ -46,6 +50,7 @@ beforeAll(async () => {
 
 // Cleanup after each test
 afterEach(async () => {
+    if (mongoose.connection.readyState !== 1) return;
     const collections = mongoose.connection.collections;
     for (const key in collections) {
         await collections[key].deleteMany({});
@@ -84,7 +89,16 @@ jest.mock('../src/config/socket', () => ({
     emitToUser: jest.fn(),
     emitToAll: jest.fn(),
     SocketEvents: {
-        USER_REGISTERED: 'user:registered',
         DASHBOARD_UPDATE: 'dashboard:update',
+        ORDER_CREATED: 'order:created',
+        ORDER_UPDATED: 'order:updated',
+        ORDER_DELETED: 'order:deleted',
+        PRODUCT_CREATED: 'product:created',
+        PRODUCT_UPDATED: 'product:updated',
+        PRODUCT_DELETED: 'product:deleted',
+        USER_REGISTERED: 'user:registered',
+        USER_UPDATED: 'user:updated',
+        USER_DELETED: 'user:deleted',
+        STOCK_LOW: 'stock:low',
     }
 }));

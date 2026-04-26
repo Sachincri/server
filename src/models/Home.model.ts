@@ -1,11 +1,12 @@
 import mongoose, { Schema, model, Document } from 'mongoose';
-import { IBanner, ICarouselItem, IProductItem, ISection, ISEO, IQuadItem, IQuadCard } from '../types/homeTypes';
+import { IBanner, ICarouselItem, IProductItem, ISection, ISEO, IQuadItem, IQuadCard, IVideoReel } from '../types/homeTypes';
 
 export interface IHomePageCMS extends Document {
   seo: ISEO;
   carousel: { items: ICarouselItem[] };
   sections: ISection[];
   headerLogo?: { public_id: string; url: string };
+  storeName?: string;
   isActive: boolean;
   createdAt?: Date;
   updatedAt?: Date;
@@ -15,10 +16,10 @@ export interface IHomePageCMS extends Document {
 const ProductItemSchema = new Schema<IProductItem>(
   {
     image: {
-      public_id: { type: String, required: true },
-      url: { type: String, required: true },
+      public_id: { type: String, default: '' },
+      url: { type: String, default: '' },
     },
-    title: { type: String, required: true },
+    title: { type: String, default: '' },
     subtitle: { type: String, default: '' },
     redirectLink: { type: String, default: '' }, // CamelCase
   }
@@ -52,10 +53,10 @@ const CarouselItemSchema = new Schema<ICarouselItem>(
 const QuadItemSchema = new Schema<IQuadItem>(
   {
     image: {
-      public_id: { type: String, required: true },
-      url: { type: String, required: true },
+      public_id: { type: String, default: '' },
+      url: { type: String, default: '' },
     },
-    title: { type: String, required: true },
+    title: { type: String, default: '' },
     redirectLink: { type: String, default: '' },
   }
 );
@@ -66,6 +67,29 @@ const QuadCardSchema = new Schema<IQuadCard>(
     items: { type: [QuadItemSchema], default: [] },
     redirectLink: { type: String, default: '' },
     redirectText: { type: String, default: '' },
+    layout: { type: String, enum: ['grid', 'single', 'carousel'], default: 'grid' },
+  }
+);
+
+/* ---------- Video Reel Schema ---------- */
+const VideoReelSchema = new Schema<IVideoReel>(
+  {
+    video: {
+      public_id: { type: String, required: false, default: '' },
+      url: { type: String, required: false, default: '' },
+    },
+    thumbnail: {
+      public_id: { type: String, default: '' },
+      url: { type: String, default: '' },
+    },
+    title: { type: String, default: '' },
+    subtitle: { type: String, default: '' },
+    redirectLink: { type: String, default: '' },
+    productId: { type: String, default: '' },
+    duration: { type: Number, default: 0, max: 60 },
+    oembedUrl: { type: String, default: '' },
+    oembedHtml: { type: String, default: '' },
+    isOEmbed: { type: Boolean, default: false },
   }
 );
 
@@ -75,7 +99,7 @@ const SectionSchema = new Schema<ISection>(
     order: { type: Number, required: true },
     type: {
       type: String,
-      enum: ['banner1', 'banner2', 'banner3', 'products', 'quad_grid'],
+      enum: ['banner1', 'banner2', 'banner3', 'products', 'quad_grid', 'single_product_carousel', 'video_reels'],
       required: true,
     },
     banners: { type: [BannerSchema], default: [] },
@@ -87,8 +111,10 @@ const SectionSchema = new Schema<ISection>(
       default: undefined,
     },
     quads: { type: [QuadCardSchema], default: [] },
+    videoReels: { type: [VideoReelSchema], default: [] },
     bgColor: { type: String, default: '' },
     bgGradient: { type: String, default: '' },
+    mobileColumns: { type: Number, enum: [1, 2] },
   }
 );
 
@@ -129,6 +155,7 @@ const HomePageCMSSchema = new Schema<IHomePageCMS>(
       public_id: { type: String, default: "" },
       url: { type: String, default: "" },
     },
+    storeName: { type: String, default: "" },
     isActive: { type: Boolean, default: true },
   },
   {

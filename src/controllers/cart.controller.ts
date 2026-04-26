@@ -58,78 +58,82 @@ const variantMatches = (variant1: any, variant2: any): boolean => {
  * POST /api/cart
  */
 export const addToCart = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const body = req.body as AddToCartBody;
-  const productId = body.productId;
-  const quantity = body.quantity ?? 1;
-  const variant = body.variant ?? null;
+  const { productId, quantity = 1, variant = null } = req.body as AddToCartBody;
   const userId = req.user?._id;
 
   if (!userId) throw ApiError.unauthorized("User not authenticated");
-  if (!productId) throw ApiError.badRequest("Product ID is required");
-  if (!mongoose.isValidObjectId(productId)) throw ApiError.badRequest("Invalid product ID");
+  if (!productId || !mongoose.isValidObjectId(productId))
+    throw ApiError.badRequest("Valid product ID is required");
 
   // Fetch product (lean for read)
-  const product = await Product.findById(productId).lean();
-  if (!product) throw ApiError.badRequest("Product not found");
+  const product = await Product.findById(productId)
+    .select("name sellingPrice maximumRetailPrice discount stock isActive images")
+    .lean();
 
+  if (!product) throw ApiError.badRequest("Product not found");
   const prodErr = validateProduct(product);
   if (prodErr) throw ApiError.badRequest(prodErr);
+
+  // Load cart once to check existing item
+  const cart = await Cart.findOne({ user: userId }).select("items").lean();
+
+  const existingItem = cart?.items.find((it: any) => {
+    const pid = it.product?.toString();
+    return pid === productId && variantMatches(it.variant, variant);
+  });
+
+  if (existingItem) {
+    const newQuantity = existingItem.quantity + quantity;
+    const qErr = validateQuantity(newQuantity, product.stock, product.name);
+    if (qErr) throw ApiError.badRequest(qErr);
+
+    // ✅ Atomic array element update — no full doc load, no pre('save') trigger
+    const updated = await Cart.findOneAndUpdate(
+      { user: userId, "items.product": new mongoose.Types.ObjectId(productId) },
+      {
+        $set: {
+          "items.$.quantity": newQuantity,
+          "items.$.sellingPrice": product.sellingPrice,
+          "items.$.maximumRetailPrice": product.maximumRetailPrice,
+          "items.$.discount": product.discount || 0,
+          "items.$.finalPrice": product.sellingPrice,
+          "items.$.stock": product.stock,
+          "items.$.productImage": product.images?.[0]?.url ?? ""
+        },
+      },
+      { new: true }
+    );
+    return res.status(200).json(ApiResponse.success(updated, "Item updated in cart"));
+  }
+
+  // New item
+  if ((cart?.items.length ?? 0) >= MAX_CART_ITEMS)
+    throw ApiError.badRequest(`Cart cannot exceed ${MAX_CART_ITEMS} items`);
 
   const qtyErr = validateQuantity(quantity, product.stock, product.name);
   if (qtyErr) throw ApiError.badRequest(qtyErr);
 
-  // Find or create cart document (needs to be a mongoose doc to save)
-  let cart = await Cart.findOne({ user: userId });
-  if (!cart) cart = new Cart({ user: userId, items: [] });
+  const newItem = {
+    product: new mongoose.Types.ObjectId(productId),
+    productName: product.name,
+    productImage: product.images?.[0]?.url ?? "",
+    quantity,
+    sellingPrice: product.sellingPrice,
+    maximumRetailPrice: product.maximumRetailPrice,
+    discount: product.discount || 0,
+    finalPrice: product.sellingPrice,
+    variant: variant || null,
+    stock: product.stock,
+  };
 
-  // Find existing item with same product + variant
-  const existingIndex = cart.items.findIndex((it: any) => {
-    const sameProduct =
-      (it.product && it.product.equals && it.product.equals(productId)) ||
-      (it.product?.toString && it.product.toString() === productId);
-    return sameProduct && variantMatches(it.variant, variant);
-  });
+  // ✅ Upsert — creates cart if missing, pushes item atomically
+  const updated = await Cart.findOneAndUpdate(
+    { user: userId },
+    { $push: { items: newItem } },
+    { upsert: true, new: true }
+  );
 
-  if (existingIndex > -1) {
-    const newQuantity = cart.items[existingIndex].quantity + quantity;
-    const qErr = validateQuantity(newQuantity, product.stock, product.name);
-    if (qErr) throw ApiError.badRequest(qErr);
-
-    cart.items[existingIndex].quantity = newQuantity;
-    cart.items[existingIndex].sellingPrice = product.sellingPrice;
-    cart.items[existingIndex].maximumRetailPrice = product.maximumRetailPrice;
-    cart.items[existingIndex].discount = product.discount || 0;
-    cart.items[existingIndex].finalPrice = product.sellingPrice;
-    cart.items[existingIndex].stock = product.stock;
-    // Update image URL when updating existing item
-    cart.items[existingIndex].productImage = (product.images && product.images.length > 0) ? product.images[0].url : "";
-  } else {
-    if (cart.items.length >= MAX_CART_ITEMS) {
-      throw ApiError.badRequest(`Cart cannot exceed ${MAX_CART_ITEMS} different items`);
-    }
-
-    cart.items.push({
-      product: new mongoose.Types.ObjectId(productId),
-      productName: product.name,
-      productImage: (product.images && product.images.length > 0) ? product.images[0].url : "", // ✅ FIXED: Extract .url
-      quantity,
-      sellingPrice: product.sellingPrice,
-      maximumRetailPrice: product.maximumRetailPrice,
-      discount: product.discount || 0,
-      finalPrice: product.sellingPrice,
-      variant: variant || null,
-      stock: product.stock,
-    } as any);
-  }
-
-  // Preserve existing coupon/coin state or reset if needed (for now preserving)
-  // cart.couponCode = cart.couponCode; 
-  // cart.isCoinsRedeemed = cart.isCoinsRedeemed;
-
-  cart.markModified("items");
-  await cart.save();
-
-  res.status(200).json(ApiResponse.success(cart, "Item added to cart successfully"));
+  return res.status(200).json(ApiResponse.success(updated, "Item added to cart successfully"));
 });
 
 /**
@@ -140,11 +144,15 @@ export const getCart = asyncHandler(async (req: AuthRequest, res: Response) => {
   const userId = req.user?._id;
   if (!userId) throw ApiError.unauthorized("User not authenticated");
 
-  let cart = await Cart.findOne({ user: userId }).populate("user", "name email");
+  const cart = await Cart.findOne({ user: userId }).populate("user", "name email");
 
   if (!cart) {
-    cart = new Cart({ user: userId, items: [] });
-    await cart.save();
+    // ✅ Return empty cart shape without saving to DB (Fix 6)
+    res.status(200).json(ApiResponse.success({
+      cart: { user: userId, items: [], subtotal: 0, total: 0, itemCount: 0 },
+      warnings: undefined
+    }));
+    return;
   }
 
   // Batch product fetch to generate warnings
@@ -166,7 +174,7 @@ export const getCart = asyncHandler(async (req: AuthRequest, res: Response) => {
     }
   }
 
-  res.status(200).json(ApiResponse.success({ cart, warnings: warnings.length ? warnings : undefined }));
+  return res.status(200).json(ApiResponse.success({ cart, warnings: warnings.length ? warnings : undefined }));
 });
 
 /**
@@ -206,7 +214,7 @@ export const updateCartItem = asyncHandler(async (req: AuthRequest, res: Respons
 
   await cart.save();
 
-  res.status(200).json(ApiResponse.success(cart, "Cart item updated successfully"));
+  return res.status(200).json(ApiResponse.success(cart, "Cart item updated successfully"));
 });
 
 /**
@@ -231,7 +239,7 @@ export const removeFromCart = asyncHandler(async (req: AuthRequest, res: Respons
 
   await cart.save();
 
-  res.status(200).json(ApiResponse.success(cart, "Item removed from cart successfully"));
+  return res.status(200).json(ApiResponse.success(cart, "Item removed from cart successfully"));
 });
 
 /**
@@ -242,13 +250,14 @@ export const clearCart = asyncHandler(async (req: AuthRequest, res: Response) =>
   const userId = req.user?._id;
   if (!userId) throw ApiError.unauthorized("User not authenticated");
 
-  const cart = await Cart.findOne({ user: userId });
+  const cart = await Cart.findOneAndUpdate(
+    { user: userId },
+    { $set: { items: [], couponCode: null, isCoinsRedeemed: false } },
+    { new: true }
+  );
   if (!cart) throw ApiError.notFound("Cart not found");
 
-  cart.items = [];
-  await cart.save();
-
-  res.status(200).json(ApiResponse.success(cart, "Cart cleared successfully"));
+  return res.status(200).json(ApiResponse.success(cart, "Cart cleared successfully"));
 });
 
 /**
@@ -266,8 +275,19 @@ export const syncCart = asyncHandler(async (req: AuthRequest, res: Response) => 
     cart = new Cart({ user: userId, items: [] });
   }
 
-  // 1. Merge local items if provided (e.g., from local storage after login)
+  // 1. Merge local items if provided (Batch Product Fetch)
   if (localItems && Array.isArray(localItems)) {
+    // ✅ Collect all productIds first to fetch in batch (Fix 3)
+    const newProductIds = localItems
+      .filter((item: any) => item.product && mongoose.isValidObjectId(item.product))
+      .map((item: any) => item.product);
+
+    const newProducts = await Product.find({ _id: { $in: newProductIds }, isActive: true })
+      .select("name sellingPrice maximumRetailPrice discount stock isActive images")
+      .lean();
+
+    const newProductMap = new Map(newProducts.map((p: any) => [p._id.toString(), p]));
+
     for (const localItem of localItems) {
       const productId = localItem.product;
       const quantity = localItem.quantity || 1;
@@ -284,12 +304,12 @@ export const syncCart = asyncHandler(async (req: AuthRequest, res: Response) => 
         cart.items[existingIndex].quantity = Math.min(MAX_ITEM_QUANTITY, cart.items[existingIndex].quantity + quantity);
       } else {
         if (cart.items.length < MAX_CART_ITEMS) {
-          const product = await Product.findById(productId).lean();
-          if (product && product.isActive && product.stock > 0) {
+          const product = newProductMap.get(productId.toString());
+          if (product && product.stock > 0) {
             cart.items.push({
               product: new mongoose.Types.ObjectId(productId),
               productName: product.name,
-              productImage: (product.images && product.images.length > 0) ? product.images[0].url : "",
+              productImage: product.images?.[0]?.url ?? "",
               quantity: Math.min(quantity, product.stock),
               sellingPrice: product.sellingPrice,
               maximumRetailPrice: product.maximumRetailPrice,
@@ -344,7 +364,7 @@ export const syncCart = asyncHandler(async (req: AuthRequest, res: Response) => 
 
   await cart.save();
 
-  return res.status(200).json(ApiResponse.success({
+  res.status(200).json(ApiResponse.success({
     cart,
     updates: updates.length ? updates : undefined,
     removedItems: removedItems.length ? removedItems : undefined,
@@ -359,16 +379,17 @@ export const getCartSummary = asyncHandler(async (req: AuthRequest, res: Respons
   const userId = req.user?._id;
   if (!userId) throw ApiError.unauthorized("User not authenticated");
 
-  // Fetch cart
-  const cart = await Cart.findOne({ user: userId }).lean();
+  // ✅ Fire all independent queries at once (Fix 4)
+  const [cart, user, settings] = await Promise.all([
+    Cart.findOne({ user: userId }).lean(),
+    User.findById(userId).select("addresses email name phone rewardPoints").lean(),
+    Settings.findOne().lean(),
+  ]);
 
-
-  // Fetch user addresses
-  const user = await User.findById(userId).select("addresses email name phone rewardPoints");
   const defaultAddress = user?.addresses?.find((addr: any) => addr.isDefault) || user?.addresses?.[0] || null;
 
   if (!cart || !cart.items || cart.items.length === 0) {
-    return res.status(200).json(ApiResponse.success({
+    res.status(200).json(ApiResponse.success({
       products: [],
       address: defaultAddress,
       priceDetails: {
@@ -380,6 +401,7 @@ export const getCartSummary = asyncHandler(async (req: AuthRequest, res: Respons
         items: 0
       }
     }));
+    return;
   }
 
   // Calculate Price Details
@@ -396,9 +418,6 @@ export const getCartSummary = asyncHandler(async (req: AuthRequest, res: Respons
   });
 
   const totalDiscount = totalMRP - totalAmount;
-
-  // Fetch Settings
-  const settings = await Settings.findOne();
 
   // Fee Logic
   const freeDeliveryThreshold = settings?.freeDeliveryThreshold ?? 500;
@@ -468,8 +487,6 @@ export const getCartSummary = asyncHandler(async (req: AuthRequest, res: Respons
   // Ensure total doesn't go negative
   finalTotalAmount = Math.max(0, finalTotalAmount - couponDiscountAmount - coinsDiscountAmount);
 
-
-
   return res.status(200).json(ApiResponse.success({
     products: cart.items,
     address: defaultAddress,
@@ -525,7 +542,7 @@ export const applyCouponToCart = asyncHandler(async (req: AuthRequest, res: Resp
   cart.couponCode = coupon.code;
   await cart.save();
 
-  res.status(200).json(ApiResponse.success(cart, "Coupon applied successfully"));
+  return res.status(200).json(ApiResponse.success(cart, "Coupon applied successfully"));
 });
 
 /**
@@ -536,13 +553,13 @@ export const removeCouponFromCart = asyncHandler(async (req: AuthRequest, res: R
   const userId = req.user?._id;
   if (!userId) throw ApiError.unauthorized("User not authenticated");
 
-  let cart = await Cart.findOne({ user: userId });
-  if (cart) {
-    cart.couponCode = undefined;
-    await cart.save();
-  }
+  const cart = await Cart.findOneAndUpdate(
+    { user: userId },
+    { $unset: { couponCode: 1 } },
+    { new: true }
+  );
 
-  res.status(200).json(ApiResponse.success(cart, "Coupon removed successfully"));
+  return res.status(200).json(ApiResponse.success(cart, "Coupon removed successfully"));
 });
 
 /**
@@ -554,11 +571,11 @@ export const toggleCartCoins = asyncHandler(async (req: AuthRequest, res: Respon
   const userId = req.user?._id;
   if (!userId) throw ApiError.unauthorized("User not authenticated");
 
-  let cart = await Cart.findOne({ user: userId });
-  if (!cart) cart = new Cart({ user: userId, items: [] }); // Should exist usually
+  const cart = await Cart.findOneAndUpdate(
+    { user: userId },
+    { $set: { isCoinsRedeemed: !!useCoins } },
+    { upsert: true, new: true }
+  );
 
-  cart.isCoinsRedeemed = !!useCoins;
-  await cart.save();
-
-  res.status(200).json(ApiResponse.success(cart, `Coins ${useCoins ? 'applied' : 'removed'} successfully`));
+  return res.status(200).json(ApiResponse.success(cart, `Coins ${useCoins ? 'applied' : 'removed'} successfully`));
 });

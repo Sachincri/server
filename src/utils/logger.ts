@@ -11,6 +11,26 @@ const consoleFormat = printf(({ level, message, timestamp, ...metadata }) => {
   return msg;
 });
 
+const activeTransports: winston.transport[] = [];
+
+// Sirf tab File transport use karein jab hum Vercel par na ho (e.g. Local ya Render par jahan file likhna allow ho)
+// Vercel serverless functions read-only file system ke sath aati hain, isliye error aata hai.
+if (!process.env.VERCEL) {
+  activeTransports.push(
+    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'logs/combined.log' })
+  );
+}
+
+// Console transport hamesha add karein taaki Render aur Vercel dono ke dashboard par logs dikhein
+activeTransports.push(
+  new winston.transports.Console({
+    format: process.env.NODE_ENV !== 'production'
+      ? combine(colorize(), timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }), consoleFormat)
+      : combine(timestamp(), json())
+  })
+);
+
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: combine(
@@ -18,23 +38,7 @@ const logger = winston.createLogger({
     json()
   ),
   defaultMeta: { service: 'serverts' },
-  transports: [
-    // Write all logs with level 'error' and below to 'error.log'
-    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-    // Write all logs with level 'info' and below to 'combined.log'
-    new winston.transports.File({ filename: 'logs/combined.log' }),
-  ],
+  transports: activeTransports,
 });
-
-// If we're not in production then log to the `console` with colors
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(new winston.transports.Console({
-    format: combine(
-      colorize(),
-      timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-      consoleFormat
-    ),
-  }));
-}
 
 export default logger;

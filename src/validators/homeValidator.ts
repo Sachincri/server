@@ -1,8 +1,10 @@
-import { IBanner, ICarouselItem, IProductItem, ISection, ISEO } from '../types/homeTypes';
+import { IBanner, ICarouselItem, IProductItem, ISection, ISEO, IVideoReel } from '../types/homeTypes';
 
 
-const validateUrl = (url: string, fieldName: string): string | null => {
-  if (!url || url.trim() === "") return `${fieldName} is required`;
+const validateUrl = (url: string, fieldName: string, optional = false): string | null => {
+  if (!url || url.trim() === "") return optional ? null : `${fieldName} is required`;
+  // Allow "pending" placeholder used by frontend during file uploads
+  if (url === "pending") return null;
   try {
     // allow http/https and relative paths
     new URL(url);
@@ -79,7 +81,8 @@ export const validateCarousel = (carousel?: { items: ICarouselItem[] }): string[
     if (item.redirectLink) {
       const e = validateUrl(
         item.redirectLink,
-        `Carousel item ${i + 1} redirect link`
+        `Carousel item ${i + 1} redirect link`,
+        true // optional
       );
       if (e) errors.push(e);
     }
@@ -111,7 +114,7 @@ const validateBanner = (
     }
   }
   if (banner.redirectLink) {
-    const e = validateUrl(banner.redirectLink, `${sectionName} redirect link`);
+    const e = validateUrl(banner.redirectLink, `${sectionName} redirect link`, true);
     if (e) errors.push(e);
   }
   return errors;
@@ -165,7 +168,7 @@ export const validateSections = (sections?: ISection[]): string[] => {
     return errors;
   }
   const orderNumbers = new Set<number>();
-  const validTypes = ["banner1", "banner2", "banner3", "products", "quad_grid"];
+  const validTypes = ["banner1", "banner2", "banner3", "products", "quad_grid", "single_product_carousel", "video_reels"];
   sections.forEach((section, idx) => {
     const name = `Section ${idx + 1}`;
     if (section.order === undefined || section.order === null) {
@@ -207,14 +210,62 @@ export const validateSections = (sections?: ISection[]): string[] => {
         section.quads.forEach((quad, qIdx) => {
           const quadName = `${name} - Quad ${qIdx + 1}`;
           if (!quad.title) errors.push(`${quadName}: Title is required`);
-          if (!quad.items || quad.items.length === 0) {
-            errors.push(`${quadName}: Items are required`);
-          } else {
+          
+          // Relax validation: items are optional (could be filled from product table)
+          if (quad.items && Array.isArray(quad.items)) {
             quad.items.forEach((item, iIdx) => {
               const itemName = `${quadName} - Item ${iIdx + 1}`;
-              if (!item.image) errors.push(`${itemName}: Image is required`);
-              if (!item.title) errors.push(`${itemName}: Title is required`);
+              // Make image and title optional during update
+              if (item.image) {
+                const imageUrl = typeof item.image === "string" ? item.image : item.image.url;
+                if (imageUrl) {
+                   const e = validateUrl(imageUrl, `${itemName} image`);
+                   if (e) errors.push(e);
+                }
+              }
+              // Title and Redirect Link can be validated if they exist, but aren't strictly required
+              if (item.redirectLink) {
+                const e = validateUrl(item.redirectLink, `${itemName} redirect link`);
+                if (e) errors.push(e);
+              }
             });
+          }
+        });
+      }
+    } else if (section.type === "video_reels") {
+      if (!section.videoReels || !Array.isArray(section.videoReels) || section.videoReels.length === 0) {
+        errors.push(`${name}: At least one video reel is required for video_reels type`);
+      } else {
+        if (section.videoReels.length > 10) {
+          errors.push(`${name}: Maximum 10 video reels per section for performance`);
+        }
+        section.videoReels.forEach((reel: IVideoReel, rIdx: number) => {
+          const reelName = `${name} - Reel ${rIdx + 1}`;
+          
+          // Only require video if not using an oEmbed social link
+          if (!reel.isOEmbed) {
+            if (!reel.video) {
+              errors.push(`${reelName}: Video is required`);
+            } else {
+              const videoUrl = typeof reel.video === "string" ? reel.video : reel.video?.url;
+              if (!videoUrl || videoUrl.trim() === "") {
+                errors.push(`${reelName}: Video URL is required`);
+              }
+            }
+          }
+          
+          if (reel.title && reel.title.length > 100) {
+            errors.push(`${reelName}: Title must be 100 characters or less`);
+          }
+          if (reel.subtitle && reel.subtitle.length > 200) {
+            errors.push(`${reelName}: Subtitle must be 200 characters or less`);
+          }
+          if (reel.duration && reel.duration > 60) {
+            errors.push(`${reelName}: Video duration must be 60 seconds or less`);
+          }
+          if (reel.redirectLink) {
+            const e = validateUrl(reel.redirectLink, `${reelName} redirect link`, true);
+            if (e) errors.push(e);
           }
         });
       }

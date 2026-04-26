@@ -59,6 +59,7 @@ router.get('/key', paymentController.getRazorpayKey);
  */
 router.post(
   '/stripe/create-intent',
+  validateOrderPrice,
   stripeController.createStripePaymentIntent
 );
 
@@ -72,6 +73,7 @@ router.post(
     body('paymentIntentId').exists().withMessage('paymentIntentId is required'),
   ],
   validate,
+  validateOrderPrice,
   stripeController.verifyStripePayment
 );
 

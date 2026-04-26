@@ -9,22 +9,22 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
-// Validate image types
-const imageFileFilter = (
+// Validate media types (images and videos)
+const mediaFileFilter = (
   _req: Request,
   file: Express.Multer.File,
   cb: FileFilterCallback
 ) => {
-  const allowedTypes = /jpeg|jpg|png|webp/;
+  const allowedTypes = /jpeg|jpg|png|webp|mp4|webm|mkv|mov/;
   const extName = allowedTypes.test(
     path.extname(file.originalname).toLowerCase()
   );
-  const mimeType = allowedTypes.test(file.mimetype);
+  const mimeType = /image|video/.test(file.mimetype);
 
   if (extName && mimeType) {
     cb(null, true);
   } else {
-    cb(new Error("Only image files (jpeg, jpg, png, webp) are allowed"));
+    cb(new Error("Only images (jpeg, jpg, png, webp) and videos (mp4, webm, mkv, mov) are allowed"));
   }
 };
 
@@ -42,9 +42,12 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  fileFilter: imageFileFilter,
+  fileFilter: mediaFileFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB per image
+    fileSize: 25 * 1024 * 1024, // 25MB per file
+    files: 12,
+    fields: 100,
+    parts: 120,
   },
 });
 

@@ -5,10 +5,23 @@ import ApiResponse from "../utils/response";
 import ApiError from "../utils/apiError";
 import { toSlug } from "../utils/helper";
 import { uploadOnCloudinary } from "../utils/uploadOnCloudinary";
+import { cacheGet, cacheSet, cacheDel, CACHE_KEYS, CACHE_TTL } from "../config/redis";
 
 export const getAllCategories = asyncHandler(
   async (_req: Request, res: Response) => {
+    // ── Redis cache check ──
+    const cached = await cacheGet(CACHE_KEYS.CATEGORIES);
+    if (cached) {
+      res.set("X-Cache", "HIT");
+      return res.status(200).json(ApiResponse.success(cached));
+    }
+
     const categories = await Category.find().populate('parent', 'name slug').lean();
+
+    // Cache for 1 hour — categories rarely change
+    await cacheSet(CACHE_KEYS.CATEGORIES, categories, CACHE_TTL.CATEGORIES);
+
+    res.set("X-Cache", "MISS");
     return res.status(200).json(ApiResponse.success(categories));
   }
 );
@@ -51,6 +64,9 @@ export const createCategory = asyncHandler(
       parent: parent || null,
       level
     });
+
+    // Invalidate categories cache
+    await cacheDel(CACHE_KEYS.CATEGORIES);
 
     return res.status(201).json(ApiResponse.created(category, "Category created successfully"));
   }

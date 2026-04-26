@@ -11,6 +11,8 @@ export interface Review {
     name: string;
     rating: number;
     comment: string;
+    images?: ImageLink[];
+    videos?: ImageLink[];
     createdAt: Date;
 }
 
@@ -24,9 +26,11 @@ export interface IProduct extends Document {
     category: Types.ObjectId;
     subCategory?: Types.ObjectId;
     brand?: Types.ObjectId;
+    weight?: number;
     stock: number;
     images: ImageLink[];
     thumbnail?: ImageLink;
+    videos?: ImageLink[];
     seller: Types.ObjectId;
     ratings: {
         average: number;
@@ -58,6 +62,12 @@ export interface IProduct extends Document {
     };
     slug: string;
     isActive: boolean;
+    homeDisplaySection?: string;
+    totalRevenue: number;
+    totalProfit: number;
+    totalTax: number;
+    totalDiscounts: number;
+    totalShipping: number;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -72,6 +82,7 @@ export interface ProductData {
     category: string;
     subCategory?: string;
     brand?: string;
+    weight?: number;
     stock: number;
     images: ImageLink[];
     thumbnail?: ImageLink;
@@ -98,6 +109,7 @@ export interface ProductData {
     };
     slug: string;
     isActive: boolean;
+    homeDisplaySection?: string;
     createdAt?: Date;
     updatedAt?: Date;
 }

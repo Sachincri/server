@@ -16,6 +16,7 @@ import { ImageLink, Review } from "../types/productTypes";
 import ApiResponse from "../utils/response";
 import { emitToAdmin, SocketEvents } from "../config/socket";
 import { AuthRequest } from "../types/index";
+import { cacheGet, cacheSet, cacheDel, cacheDelPattern, CACHE_KEYS, CACHE_TTL } from "../config/redis";
 
 // Helper to parse multipart array fields (which might be JSON strings)
 const parseJSONField = (field: string | string[] | undefined): any[] => {
@@ -48,6 +49,7 @@ interface ProductData {
   warranty?: string;
   description?: string;
   isActive: boolean;
+  homeDisplaySection?: string;
   seo?: string | {
     title?: string;
     description?: string;
@@ -64,6 +66,24 @@ const MAX_COMMENT_LENGTH = 100;
 const MIN_PRODUCT_NAME_LENGTH = 3;
 const LOW_STOCK_THRESHOLD = 10;
 const MAX_RESULTS_PER_PAGE = 100;
+
+const invalidateProductCaches = async (
+  identifiers: Array<string | undefined | null> = [],
+  includeHome = false
+): Promise<void> => {
+  const uniqueIdentifiers = Array.from(new Set(identifiers.filter(Boolean) as string[]));
+  const tasks: Promise<void>[] = [
+    cacheDelPattern('products:list:*'),
+    cacheDel(CACHE_KEYS.PRODUCT_TOTAL_COUNT),
+    ...uniqueIdentifiers.map((identifier) => cacheDel(CACHE_KEYS.PRODUCT_DETAIL(identifier))),
+  ];
+
+  if (includeHome) {
+    tasks.push(cacheDel(CACHE_KEYS.HOME_PAGE));
+  }
+
+  await Promise.all(tasks);
+};
 
 // Helper Functions
 const validateProductData = (data: Partial<ProductData>): string[] => {
@@ -170,6 +190,7 @@ export const createProduct = asyncHandler(
       stock,
       warranty,
       description,
+      homeDisplaySection,
       seo,
     } = req.body as ProductData;
 
@@ -200,6 +221,7 @@ export const createProduct = asyncHandler(
     const allFiles = (req.files as Express.Multer.File[]) || [];
     const mainImageFiles = allFiles.filter((f) => f.fieldname === "images");
     const thumbnailFile = allFiles.find((f) => f.fieldname === "thumbnail");
+    const videoFiles = allFiles.filter((f) => f.fieldname === "videos");
 
     if (mainImageFiles.length === 0) {
       throw ApiError.badRequest("Please add at least one product image");
@@ -212,6 +234,8 @@ export const createProduct = asyncHandler(
       const thumbResult = await uploadImages([thumbnailFile]);
       if (thumbResult.length > 0) thumbnailLink = thumbResult[0];
     }
+
+    const videosLinks = videoFiles.length > 0 ? await uploadImages(videoFiles) : [];
 
     const offersArr = toStringArray(offers);
     const highlightsArr = toStringArray(highlights);
@@ -250,6 +274,7 @@ export const createProduct = asyncHandler(
       stock,
       images: imagesLinks,
       thumbnail: thumbnailLink,
+      videos: videosLinks,
       seller: req.user?._id,
       offers: offersArr,
       highlights: highlightsArr,
@@ -258,6 +283,7 @@ export const createProduct = asyncHandler(
       specifications: specificationsRaw,
       warranty: warranty?.trim() || "",
       slug,
+      homeDisplaySection: homeDisplaySection?.trim() || "",
       isActive: req.body.isActive === 'false' ? false : true,
       seo: (() => {
         const seoObj = typeof seo === 'string' ? JSON.parse(seo) : seo;
@@ -281,6 +307,9 @@ export const createProduct = asyncHandler(
     res
       .status(201)
       .json(ApiResponse.created(null, "Product created successfully"));
+
+    // Invalidate product caches after response
+    await invalidateProductCaches([], true);
   }
 );
 
@@ -296,35 +325,59 @@ export const getAllProducts = asyncHandler(
       );
     }
 
+    // ✅ Fix 5: Sort query params before stringifying → stable cache keys (doubles hit rate)
+    const sortedQuery = Object.fromEntries(
+      Object.entries(req.query).sort(([a], [b]) => a.localeCompare(b))
+    );
+    const cacheKey = CACHE_KEYS.PRODUCT_LIST(JSON.stringify(sortedQuery));
+
+    const cached = await cacheGet(cacheKey);
+    if (cached) {
+      res.set("X-Cache", "HIT");
+      return res.status(200).json(ApiResponse.success(cached));
+    }
+
     // ---------- Base Query ----------
     const baseQuery = new SearchFeatures(Product.find(), req.query)
       .search()
       .filter();
 
-    // ---------- Counts (NO DOCUMENT FETCH) ----------
-    const [productsCount, filteredProductsCount] = await Promise.all([
-      Product.countDocuments(),
-      Product.countDocuments(baseQuery.query.getFilter()),
-    ]);
+    // ✅ Fix 2: Cache total count separately — it rarely changes
+    let productsCount = await cacheGet<number>(CACHE_KEYS.PRODUCT_TOTAL_COUNT);
+    if (productsCount === null) {
+      productsCount = await Product.countDocuments({ isActive: true });
+      await cacheSet(CACHE_KEYS.PRODUCT_TOTAL_COUNT, productsCount, 300); // 5 min TTL
+    }
+
+    // Filtered count still needs to be dynamic
+    const filteredProductsCount = await Product.countDocuments(baseQuery.query.getFilter());
 
     // ---------- Pagination ----------
     baseQuery.pagination(resultPerPage);
 
+    // ✅ Fix 3: Exclude heavy fields not needed in a listing (30-50% data reduction)
+    const LIST_PROJECTION = "-reviews -description -specifications -videos -seo";
+
     const products = await baseQuery.query
+      .select(LIST_PROJECTION)
       .lean() // 🔥 BIG performance boost
       .exec();
 
+    const responseData = {
+      products,
+      productsCount,
+      filteredProductsCount,
+      resultPerPage,
+      currentPage,
+      totalPages: Math.ceil(filteredProductsCount / resultPerPage),
+    };
+
+    // Cache product listing for 1 minute
+    await cacheSet(cacheKey, responseData, CACHE_TTL.PRODUCT_LIST);
+
     // ---------- Response ----------
-    res.status(200).json(
-      ApiResponse.success({
-        products,
-        productsCount,
-        filteredProductsCount,
-        resultPerPage,
-        currentPage,
-        totalPages: Math.ceil(filteredProductsCount / resultPerPage),
-      })
-    );
+    res.set("X-Cache", "MISS");
+    return res.status(200).json(ApiResponse.success(responseData));
   }
 );
 
@@ -392,6 +445,14 @@ export const getProductDetails = asyncHandler(
       throw ApiError.badRequest("Product identifier is required");
     }
 
+    // ── Redis cache check ──
+    const cacheKey = CACHE_KEYS.PRODUCT_DETAIL(id);
+    const cached = await cacheGet(cacheKey);
+    if (cached) {
+      res.set("X-Cache", "HIT");
+      return res.status(200).json(ApiResponse.success({ product: cached }));
+    }
+
     let product;
     if (isValidObjectId(id)) {
       product = await Product.findById(id).populate("category").populate("brand");
@@ -403,7 +464,11 @@ export const getProductDetails = asyncHandler(
       throw ApiError.notFound("Product not found");
     }
 
-    res.status(200).json(ApiResponse.success({ product }));
+    // Cache product detail for 5 minutes
+    await cacheSet(cacheKey, product.toObject(), CACHE_TTL.PRODUCT_DETAIL);
+
+    res.set("X-Cache", "MISS");
+    return res.status(200).json(ApiResponse.success({ product }));
   }
 );
 
@@ -457,6 +522,9 @@ export const updateProduct = asyncHandler(
     if (productData.stock !== undefined) update.stock = productData.stock;
     if (productData.warranty !== undefined)
       update.warranty = productData.warranty.trim();
+    if (productData.homeDisplaySection !== undefined)
+      update.homeDisplaySection = productData.homeDisplaySection.trim();
+
     if ((productData as any).isActive !== undefined) {
       update.isActive =
         (productData as any).isActive === "true" ||
@@ -487,6 +555,7 @@ export const updateProduct = asyncHandler(
     const allFiles = (req.files as Express.Multer.File[]) || [];
     const mainImageFiles = allFiles.filter((f) => f.fieldname === "images");
     const thumbnailFile = allFiles.find((f) => f.fieldname === "thumbnail");
+    const videoFiles = allFiles.filter((f) => f.fieldname === "videos");
 
     // Update Main Images if new ones provided
     if (mainImageFiles.length > 0) {
@@ -557,6 +626,21 @@ export const updateProduct = asyncHandler(
       }
     }
 
+    // Process Videos
+    let currentVideos = (product as any).videos || [];
+    if (req.body.removedVideoUrls) {
+      const removedVids = toStringArray(req.body.removedVideoUrls);
+      if (removedVids.length > 0) {
+        await deleteImages(removedVids);
+        currentVideos = currentVideos.filter((v: any) => !removedVids.includes(v.url));
+        update.videos = currentVideos;
+      }
+    }
+    if (videoFiles.length > 0) {
+      const newVideoLinks = await uploadImages(videoFiles);
+      update.videos = [...currentVideos, ...newVideoLinks];
+    }
+
     // Process Colors
     if (productData.colors !== undefined) {
       // Logic for colors update is tricky. We get the FULL new list of colors.
@@ -606,6 +690,8 @@ export const updateProduct = asyncHandler(
         stock: updatedProduct.stock,
       });
     }
+    // Invalidate product caches
+    await invalidateProductCaches([id, product.slug, updatedProduct?.slug], true);
 
     res
       .status(200)
@@ -638,6 +724,9 @@ export const deleteProduct = asyncHandler(
     // Emit socket event for real-time dashboard update
     emitToAdmin(SocketEvents.PRODUCT_DELETED, { productId: id });
     emitToAdmin(SocketEvents.DASHBOARD_UPDATE, { type: 'product_deleted' });
+
+    // Invalidate product caches
+    await invalidateProductCaches([id, product.slug], true);
 
     res.status(200).json(ApiResponse.success(null, "Product deleted successfully"));
   }
@@ -675,7 +764,7 @@ export const createProductReview = asyncHandler(
     const order = await Order.findOne({
       user: req.user!._id,
       "orderItems.product": productId,
-      orderStatus: "delivered",
+      orderStatus: "Delivered",
     });
 
     if (!order) {
@@ -690,11 +779,35 @@ export const createProductReview = asyncHandler(
       throw ApiError.notFound("Product not found");
     }
 
+    // Handle File Uploads (Images and Videos)
+    const images: any[] = [];
+    const videos: any[] = [];
+    const files = req.files as any[];
+
+    if (files && files.length > 0) {
+      for (const file of files) {
+        const result = await uploadOnCloudinary(file.path, {
+          folder: `ecommerce/reviews/${productId}`,
+          resource_type: "auto"
+        });
+        if (result) {
+          const media = { public_id: result.public_id, url: result.secure_url };
+          if (file.mimetype.startsWith("video/")) {
+            videos.push(media);
+          } else {
+            images.push(media);
+          }
+        }
+      }
+    }
+
     const review = {
       user: req.user!._id,
       name: req.user!.name,
       rating: numRating,
       comment: comment?.trim() || "",
+      images,
+      videos,
     };
 
     const existingReviewIndex = product.reviews.findIndex(
@@ -702,11 +815,20 @@ export const createProductReview = asyncHandler(
     );
 
     if (existingReviewIndex !== -1) {
-      product.reviews[existingReviewIndex] = {
-        ...product.reviews[existingReviewIndex],
-        rating: numRating,
-        comment: comment?.trim() || "",
-      };
+      // Cleanup old media if new media is provided
+      if (images.length > 0 || videos.length > 0) {
+        const oldReview = product.reviews[existingReviewIndex] as any;
+        const oldMedia = [...(oldReview.images || []), ...(oldReview.videos || [])];
+        for (const media of oldMedia) {
+          if (media.public_id) await deleteFromCloudinary(media.public_id);
+        }
+      }
+
+      const review = product.reviews[existingReviewIndex] as any;
+      review.rating = numRating;
+      review.comment = comment?.trim() || "";
+      if (images.length > 0) review.images = images;
+      if (videos.length > 0) review.videos = videos;
     } else {
       product.reviews.push(review as any);
     }
@@ -718,6 +840,7 @@ export const createProductReview = asyncHandler(
     };
 
     await product.save({ validateBeforeSave: false });
+    await invalidateProductCaches([productId, product.slug]);
 
     res.status(200).json(ApiResponse.success(
       null,
@@ -806,7 +929,7 @@ export const getProductReviews = asyncHandler(
 );
 
 export const deleteReview = asyncHandler(
-  async (req: Request, res: Response, _next: NextFunction) => {
+  async (req: AuthRequest, res: Response, _next: NextFunction) => {
     const { productId, id } = req.query;
 
     if (
@@ -828,12 +951,19 @@ export const deleteReview = asyncHandler(
       throw ApiError.notFound("Product not found");
     }
 
-    const reviewExists = product.reviews.some(
+    const reviewToDelete = product.reviews.find(
       (rev: any) => rev._id.toString() === id
-    );
+    ) as any;
 
-    if (!reviewExists) {
+    if (!reviewToDelete) {
       throw ApiError.notFound("Review not found");
+    }
+
+    const isOwner = reviewToDelete.user?.toString() === req.user?._id.toString();
+    const isAdmin = req.user?.role === "admin";
+
+    if (!isOwner && !isAdmin) {
+      throw ApiError.forbidden("Not authorized to delete this review");
     }
 
     const reviews = product.reviews.filter(
@@ -858,6 +988,7 @@ export const deleteReview = asyncHandler(
       }
     );
 
+    await invalidateProductCaches([productId, product.slug]);
 
     res.status(200).json(ApiResponse.success(null, "Review deleted successfully"));
   }

@@ -1,19 +1,17 @@
 import { Request, Response } from "express";
-import { startSession } from "mongoose";
 import crypto from "crypto";
 import Razorpay from "razorpay";
 import Stripe from "stripe";
 import { Payment } from "../models/Payment.model";
 import Order from "../models/Order.model";
-import Coupon from "../models/Coupon.model";
-import CoinLedger from "../models/CoinLedger.model";
-import User from "../models/User.model";
 import asyncError from "../middleware/asyncHandler";
 import ApiError from "../utils/apiError";
 import ApiResponse from "../utils/response";
 import { PaymentVerificationBody, RazorpayOrderOptions } from "../types/paymentTypes";
-import { Cart } from "../models/Cart.model";
 import { AuthRequest } from "../types/index";
+import { createNotification, notifyAdmins } from "./notification.controller";
+import { emitToAdmin, SocketEvents } from "../config/socket";
+import { finalizePaidCheckout } from "../services/checkout.service";
 
 // Constants
 const DEFAULT_CURRENCY = "INR";
@@ -149,7 +147,6 @@ export const paymentVerification = asyncError(
       throw ApiError.internal("Order validation context missing.");
     }
 
-    const { itemsPrice, shippingCharges } = validation;
     const finalAmount = validation.finalAmount;
 
     // Fetch payment details directly from Razorpay to cross-verify the amount
@@ -165,92 +162,60 @@ export const paymentVerification = asyncError(
       throw ApiError.badRequest("Payment amount mismatch. Please contact support.");
     }
 
-    const session = await startSession();
-    session.startTransaction();
-
-    try {
-      // Record the successful payment
-      const [payment] = await Payment.create([{
+    const { order: newOrder, payment, idempotent } = await finalizePaidCheckout({
+      userId: req.user?._id,
+      userName: req.user?.name,
+      userEmail: req.user?.email,
+      validation,
+      shippingInfo: orderOptions?.shippingInfo || {},
+      payment: {
+        provider: "razorpay",
         razorpay_order_id,
         razorpay_payment_id,
         razorpay_signature,
         amount: paymentDetails.amount / 100,
         currency: paymentDetails.currency,
-        status: "success",
         method: paymentDetails.method,
         email: paymentDetails.email,
         contact: paymentDetails.contact,
-        capturedAt: new Date(),
-      }], { session });
+      },
+    });
 
-      // Build the final order using validated server-side data
-      const [newOrder] = await Order.create([{
-        shippingInfo: orderOptions?.shippingInfo || {},
-        orderItems: validation.cart.items.map((item: any) => ({
-          product: item.product,
-          name: item.productName,
-          sellingPrice: item.sellingPrice,
-          image: item.productImage,
-          quantity: item.quantity,
-          size: item.variant?.size,
-          color: item.variant?.color,
-          status: "Processing"
-        })),
-        user: req.user?._id,
-        itemsPrice,
-        shippingPrice: shippingCharges,
+    if (!idempotent) {
+      const userId = String(req.user?._id);
+      const orderId = String(newOrder._id);
+
+      await createNotification(
+        userId,
+        'order_status',
+        'Order Confirmed! ✅',
+        `Your order #${orderId.slice(-6)} has been placed successfully. Total: ₹${finalAmount}`,
+        { orderId, status: 'Ordered' }
+      );
+
+      // Notify Admins
+      await notifyAdmins(
+        'system_alert',
+        'New Paid Order 💰',
+        `New order #${orderId.slice(-6)} placed by ${req.user?.name || 'User'} for ₹${finalAmount}.`,
+        { orderId }
+      );
+
+      // Socket events for admin dashboard
+      emitToAdmin(SocketEvents.ORDER_CREATED, {
+        orderId: newOrder._id,
         totalPrice: finalAmount,
-        redeemCoins: validation.redeemCoins,
-        paidAt: new Date(),
-        coupon: validation.coupon ? {
-          code: validation.couponCode,
-          discount: validation.couponDiscount
-        } : undefined,
-        paymentInfo: {
-          id: String(payment._id),
-          status: "success",
-          method: paymentDetails.method,
-        },
-        orderStatus: "Placed",
-      }], { session });
-
-      // Manage rewards and coupon usage
-      if (validation.redeemCoins > 0) {
-        await User.findByIdAndUpdate(req.user?._id, { $inc: { rewardPoints: -validation.redeemCoins } }, { session });
-        await CoinLedger.create([{
-          user: req.user?._id,
-          amount: -validation.redeemCoins,
-          type: 'redeem',
-          description: `Used for order ${newOrder._id}`,
-          createdAt: new Date()
-        }], { session });
-      }
-
-      if (validation.coupon) {
-        await Coupon.findByIdAndUpdate(validation.coupon._id, { $inc: { usedCount: 1 } }, { session });
-      }
-
-      // Finalize cart state
-      const cart = await Cart.findOne({ user: req.user?._id }).session(session);
-      if (cart) {
-        cart.items = [];
-        cart.subtotal = 0;
-        cart.total = 0;
-        cart.totalDiscount = 0;
-        cart.itemCount = 0;
-        await cart.save({ session });
-      }
-
-      await session.commitTransaction();
-      session.endSession();
-
-      res.status(201).json(ApiResponse.created({ orderId: newOrder._id, paymentId: payment._id }, "Order placed successfully."));
-
-    } catch (error) {
-      await session.abortTransaction();
-      session.endSession();
-      throw error;
+        orderStatus: 'Ordered',
+        createdAt: new Date(),
+      });
+      emitToAdmin(SocketEvents.DASHBOARD_UPDATE, { type: 'order_created' });
     }
+
+    const payload = { orderId: newOrder._id, paymentId: payment._id };
+    if (idempotent) {
+      return res.status(200).json(ApiResponse.success(payload, "Order already placed for this payment."));
+    }
+    return res.status(201).json(ApiResponse.created(payload, "Order placed successfully."));
   }
 );
 
@@ -287,7 +252,10 @@ export const getPaymentDetails = asyncError(
     const order = await Order.findOne({ "paymentInfo.id": payment._id });
 
     // Ensure users can only view their own payments
-    if (order && order.user.toString() !== req.user?._id.toString()) {
+    if (!order) {
+      throw ApiError.notFound("Associated order not found.");
+    }
+    if (order.user.toString() !== req.user?._id.toString() && req.user?.role !== "admin") {
       throw ApiError.forbidden("Access denied.");
     }
 
@@ -491,9 +459,18 @@ export const refundPayment = asyncError(
 
       const order = await Order.findOne({ "paymentInfo.id": String(payment._id) });
       if (order) {
-        order.orderStatus = "Refunded";
+        order.orderStatus = "Returned";
         order.paymentInfo.status = "refunded";
         await order.save({ validateBeforeSave: false });
+
+        // Notify User about Refund
+        await createNotification(
+          String(order.user),
+          'refund_update',
+          'Refund Processed 💰',
+          `A refund of ₹${calculatedRefundAmount} has been processed for order #${String(order._id).slice(-6)}.`,
+          { orderId: order._id }
+        );
       }
 
       res.status(200).json(ApiResponse.success({ refund }, "Payment refunded successfully."));

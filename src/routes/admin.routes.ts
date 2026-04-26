@@ -12,15 +12,17 @@ import {
 import { getSettings, updateSettings } from "../controllers/settings.controller";
 import { protect, restrictTo } from "../middleware/auth.middleware";
 import { getAdminProducts } from "../controllers/product.controller";
-import { getAllOrders, getOrderStats, updateOrderStatus, deleteOrder } from "../controllers/order.controller";
+import { getAllOrders, getOrderStats, updateOrderStatus, deleteOrder, getOrderTracking } from "../controllers/order.controller";
 
 
 const router = express.Router();
 
 router.use(protect);
-router.use(restrictTo("seller", "admin"));
 
-router.get("/product/details", getAdminProducts)
+router.get("/product/details", restrictTo("seller", "admin"), getAdminProducts)
+
+router.use(restrictTo("admin"));
+
 router.get("/dashboard", getAdminDashboard);
 router.get("/analytics/products", getProductAnalytics);
 router.get("/analytics/customers", getCustomerAnalytics);
@@ -39,6 +41,7 @@ router.get("/settings", getSettings);
 router.put("/settings", updateSettings);
 
 // Order management
+router.get("/order/:id/tracking", getOrderTracking);
 router.put("/order/:id", updateOrderStatus);
 router.delete("/order/:id", deleteOrder);
 
