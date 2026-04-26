@@ -1,7 +1,15 @@
-import { Expo, ExpoPushMessage } from 'expo-server-sdk';
 import logger from './logger';
 
-const expo = new Expo();
+// Lazy load Expo to handle ESM compatibility in CJS environment
+let expo: any = null;
+
+async function getExpo() {
+  if (!expo) {
+    const { Expo } = await import('expo-server-sdk');
+    expo = new Expo();
+  }
+  return expo;
+}
 
 export interface NotificationPayload {
   to: string | string[];
@@ -16,8 +24,12 @@ export interface NotificationPayload {
 export async function sendPushNotification(payload: NotificationPayload) {
   const { to, title, body, data } = payload;
   
+  // Dynamically import types and class
+  const { Expo } = await import('expo-server-sdk');
+  const expoInstance = await getExpo();
+  
   const tokens = Array.isArray(to) ? to : [to];
-  const messages: ExpoPushMessage[] = [];
+  const messages: any[] = []; // Using any because of dynamic import type issues
 
   for (const token of tokens) {
     if (!Expo.isExpoPushToken(token)) {
@@ -34,20 +46,18 @@ export async function sendPushNotification(payload: NotificationPayload) {
     });
   }
 
-  const chunks = expo.chunkPushNotifications(messages);
+  const chunks = expoInstance.chunkPushNotifications(messages);
   const tickets = [];
 
   for (const chunk of chunks) {
     try {
-      const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+      const ticketChunk = await expoInstance.sendPushNotificationsAsync(chunk);
       tickets.push(...ticketChunk);
     } catch (error) {
       logger.error('Error sending push notification chunk:', error);
     }
   }
 
-  // NOTE: You should ideally handle tickets to check for errors/unsubscriptions
-  // but for basic setup, this is sufficient.
   return tickets;
 }
 
