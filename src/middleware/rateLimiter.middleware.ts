@@ -22,6 +22,8 @@ const createRateLimiter = (windowMs: number, max: number, message: string) => {
     standardHeaders: true,
     legacyHeaders: false,
     passOnStoreError: true,
+    // Disable validation to prevent crash when store returns 0 (totalHits must be positive error)
+    validate: { default: false },
   };
 
   if (isRedisConfigured()) {
