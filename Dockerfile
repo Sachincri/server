@@ -22,9 +22,6 @@ COPY --from=builder /app/dist ./dist
 # Create logs directory
 RUN mkdir -p logs
 
-# Use a volume for persistent logs
-VOLUME /app/logs
-
 EXPOSE 5000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
