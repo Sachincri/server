@@ -4,7 +4,7 @@ import logger from "../utils/logger";
 const connectDB = async (): Promise<void> => {
   try {
     const conn = await mongoose.connect(process.env.MONGODB_URI as string, {
-      dbName: "eCom",
+      dbName: process.env.DB_NAME || "ecommerce",
 
       // ── Connection Pool (scaled for 10K concurrent users) ──
       maxPoolSize: 50,              // Max connections per PM2 worker (4 workers × 50 = 200 total)
